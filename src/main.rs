@@ -1,3 +1,6 @@
+#![deny(clippy::all)]
+#![warn(clippy::pedantic, clippy::nursery)]
+
 use clap::Parser;
 
 #[derive(Parser)]
@@ -27,6 +30,5 @@ impl Args {
 
 fn main() {
     let args: Args = Args::parse();
-
 
 }
