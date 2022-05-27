@@ -1,57 +1,12 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic, clippy::nursery)]
 
+mod lsb_release;
+mod args;
+
 use clap::Parser;
-
-#[derive(Parser)]
-struct Args {
-    #[clap(short = 'v', long = "version", long = "show-lsb-modulesw")]
-    show_lsb_modules: bool,
-    #[clap(short = 'i', long = "id")]
-    show_distributor: bool,
-    #[clap(short = 'd', long = "description")]
-    show_description: bool,
-    #[clap(short = 'r', long = "release")]
-    show_release: bool,
-    #[clap(short = 'c', long = "codename")]
-    show_codename: bool,
-    #[clap(short = 'a', long = "all")]
-    show_all: bool,
-    #[clap(short = 's', long = "short")]
-    show_in_short_format: bool,
-}
-
-impl Args {
-    const fn set_implied_flags(mut self) -> Self {
-        if self.show_all {
-            self.show_lsb_modules = true;
-            self.show_distributor = true;
-            self.show_description = true;
-            self.show_release = true;
-            self.show_codename = true;
-        } else {
-            self.show_lsb_modules = !self.show_lsb_modules && !self.show_distributor && !self.show_description && !self.show_release && !self.show_codename;
-        }
-
-        self
-    }
-}
-
-trait LSBInfo {
-    fn id(&self) -> Option<String>;
-
-    fn description(&self) -> Option<String>;
-
-    fn release(&self) -> Option<String>;
-
-    fn codename(&self) -> Option<String>;
-
-    fn lsb_version(&self) -> Option<Vec<String>>;
-}
-
-fn grub_info() -> impl LSBInfo {
-    todo!("not yet")
-}
+use crate::args::Args;
+use crate::lsb_release::{LSBInfo, grub_info};
 
 fn main() {
     let args: Args = Args::parse();
