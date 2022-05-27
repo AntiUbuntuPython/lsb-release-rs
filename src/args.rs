@@ -1,5 +1,6 @@
 use clap::Parser;
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Parser)]
 pub(crate) struct Args {
     #[clap(short = 'v', long = "version", long = "show-lsb-modulesw")]
