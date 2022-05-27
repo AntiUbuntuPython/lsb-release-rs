@@ -9,3 +9,5 @@ description = "This crate is ported version of lsb_release(1)"
 [dependencies]
 clap = { version = "3.1.18", features = ["derive"] }
 fancy-regex = "0.10.0"
+once_cell = "1.12.0"
+voca_rs = "1.14.0"
