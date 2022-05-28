@@ -3,10 +3,11 @@ use std::env::var;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader, ErrorKind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use fancy_regex::Regex;
 use once_cell::sync::Lazy;
+use voca_rs::Voca;
 
 pub(crate) trait LSBInfo {
     fn id(&self) -> Option<String>;
@@ -93,8 +94,7 @@ impl LSBInfo for LSBInfoGetter {
                 ['-', '+', '~']
                     .into_iter()
                     .find(|a| version.contains(*a))
-                    .map(|s| version.splitn(2, s).collect::<Vec<_>>().get(0).unwrap().clone())
-                    .unwrap_or(version)
+                    .map_or(*version, |s| version.splitn(2, s).collect::<Vec<_>>().get(0).unwrap())
             };
 
             for pkg in provides.split(',') {
@@ -106,27 +106,24 @@ impl LSBInfo for LSBInfoGetter {
 
                 let named_groups = mob.unwrap();
 
+                let module = named_groups.name("module").unwrap().as_str();
+                let arch = named_groups.name("arch").unwrap().as_str();
                 if named_groups.name("version").is_some() {
-                    let module = named_groups.name("module").unwrap().as_str();
                     let version = named_groups.name("version").unwrap().as_str();
-                    let arch = named_groups.name("arch").unwrap().as_str();
-
                     let module = format!("{module}s-{version}s-{arch}s");
+
                     modules.insert(module);
                 } else {
-                    let module = named_groups.name("module").unwrap().as_str();
                     for v in valid_lsb_versions(version, module) {
-                        let module = named_groups.name("module").unwrap().as_str();
                         let version = v;
-                        let arch = named_groups.name("arch").unwrap().as_str();
-
                         let module = format!("{module}s-{version}s-{arch}s");
+
                         modules.insert(module);
                     }
                 }
             }
-
         }
+
         let mut module_vec = modules.into_iter().collect::<Vec<_>>();
         module_vec.sort();
         Some(module_vec)
@@ -164,11 +161,11 @@ fn valid_lsb_versions<'v: 'r, 'r>(version: &'v str, module: &'r str) -> Vec<&'r 
             "cxx" => &["3.0", "3.1", "3.2", "4.0", "4.1"],
             _ => &["2.0", "3.0", "3.1", "3.2", "4.0", "4.1"],
         }
-        _ => return vec![version.clone()]
+        _ => return vec![version]
     }.to_vec()
 }
 
-#[derive(Eq, PartialEq, Default)]
+#[derive(Eq, PartialEq, Default, Clone)]
 struct DistroInfo {
     release: Option<String>,
     codename: Option<String>,
@@ -177,7 +174,7 @@ struct DistroInfo {
 }
 
 impl DistroInfo {
-    fn is_partial(&self) -> bool {
+    const fn is_partial(&self) -> bool {
         self.release.is_none() && self.codename.is_none() && self.id.is_none() && self.description.is_none()
     }
 
@@ -193,17 +190,94 @@ impl DistroInfo {
 
 // this is guess_debian_release()
 fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
-    let mut lsbinfo = DistroInfo::default();
-    lsbinfo.id = Some("Debian".to_string());
-
+    let mut lsbinfo = DistroInfo { id: Some("Debian".to_string()), ..DistroInfo::default() };
     let dpkg_origin = dpkg_origin();
+    {
+        let f = File::open(dpkg_origin).map_err(|e| eprintln!("Unable to open dpkg_origin: {e}")).unwrap();
+        let f = BufReader::new(f);
+        let lines = f.lines().map(|a| a.unwrap()).collect::<Vec<_>>();
+        for line in lines {
+            let elements = line.splitn(2, ": ").collect::<Vec<_>>();
+            let (header, content) = (elements.get(0).unwrap(), elements.get(1).unwrap());
+            let header = header._lower_case();
+            let content = content.trim();
+            if header == "vendor" {
+                lsbinfo.id = Some(content.to_string());
+            }
 
+        }
+    }
 
-    Ok(lsbinfo)
+    let x = get_distro_info(lsbinfo.id.clone());
+
+    let kernel = uname_rs::Uname::new()?;
+
+    Ok(lsbinfo.clone())
+}
+
+use serde::Deserialize;
+#[derive(Deserialize, Eq, PartialEq, Clone)]
+struct DistroInfoCsvRecord {
+    version: String,
+    series: String,
+}
+
+#[derive(Eq, PartialEq)]
+struct X {
+    codename_lookup: Vec<DistroInfoCsvRecord>,
+    release_order: Vec<String>,
+    debian_testing_codename: Option<String>,
+}
+
+fn get_distro_info(origin: Option<String>) -> X {
+    let origin = origin.unwrap_or_else(|| "Debian".to_string());
+    let csv_file = get_distro_csv(origin.clone());
+
+    let mut codename_lookup = csv::Reader::from_path(csv_file)
+        .unwrap()
+        .deserialize::<DistroInfoCsvRecord>()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>();
+    // f64 is not Ord
+    codename_lookup.sort_by(|a, b| a.series.parse::<f64>().unwrap().partial_cmp(&b.series.parse::<f64>().unwrap()).unwrap());
+    let mut release_order = codename_lookup.iter().map(|a| a.series.clone()).collect::<Vec<_>>();
+
+    let debian_testing_codename = if origin.to_lowercase() == *"debian" {
+        release_order.append(
+            &mut vec![
+                "stable".to_string(),
+                "proposed-updates".to_string(),
+                "testing".to_string(),
+                "testing-proposed-updates".to_string(),
+                "unstable".to_string(),
+                "sid".to_string(),
+            ]
+        );
+
+        Some("unknown.new.testing")
+    } else {
+        None
+    };
+
+    X {
+        codename_lookup,
+        release_order,
+        debian_testing_codename: debian_testing_codename.map(std::string::ToString::to_string),
+    }
+}
+
+fn get_distro_csv(origin: String) -> impl AsRef<Path> {
+    let path = format!("/usr/share/distro-info/{origin}.csv");
+    if Path::new(&path).exists() {
+        path
+    } else {
+        // fallback
+        "/usr/share/distro-info/debian.csv".to_string()
+    }
 }
 
 fn dpkg_origin() -> impl AsRef<Path> {
-    var("LSB_ETC_DPKG_ORIGINS_DEFAULT").unwrap_or("/etc/dpkg/origins/default".to_string())
+    var("LSB_ETC_DPKG_ORIGINS_DEFAULT").unwrap_or_else(|_| "/etc/dpkg/origins/default".to_string())
 }
 
 // this is get_os_release()
@@ -270,7 +344,7 @@ fn get_distro_information() -> Result<DistroInfo, Box<dyn Error>> {
 }
 
 fn get_path() -> impl AsRef<Path> {
-    std::env::var("LSB_OS_RELEASE").unwrap_or("/usr/lib/os-release".to_string())
+    var("LSB_OS_RELEASE").unwrap_or_else(|_| "/usr/lib/os-release".to_string())
 }
 
 pub(crate) fn grub_info() -> impl LSBInfo {
