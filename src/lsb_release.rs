@@ -212,30 +212,37 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
 
     let x = get_distro_info(lsbinfo.id.clone());
 
-    let kernel = uname_rs::Uname::new()?.sysname.as_str();
-
-    let os = match kernel {
-        x @ ("Linux" | "Hurd" | "NetBSD") => format!("GNU/{x}").as_str(),
-        "FreeBSD" => "GNU/kFreeBSD",
-        x @ ("GNU/Linux" | "GNU/kFreeBSD") => x,
-        _ => "GNU"
+    let os = match uname_rs::Uname::new()?.sysname.as_str() {
+        x @ ("Linux" | "Hurd" | "NetBSD") => format!("GNU/{x}"),
+        "FreeBSD" => "GNU/kFreeBSD".to_string(),
+        x @ ("GNU/Linux" | "GNU/kFreeBSD") => x.to_string(),
+        _ => "GNU".to_string(),
     };
 
-    lsbinfo.description = Some(format!("{id}s {os}s", id = lsbinfo.id.unwrap_or_default()));
+    lsbinfo.description = Some(format!("{id}s {os}s", id = lsbinfo.id.clone().unwrap_or_default()));
     lsbinfo.release = {
         let path = etc_debian_version();
         // FIXME: this is not correct. should skip operation instead of panicking
-        let release = BufReader::new(File::open(path).map_err(|e| eprintln!("Unable to open debian_release: {e}")).unwrap())
+        let read_lines = &BufReader::new(File::open(path).map_err(|e| eprintln!("Unable to open debian_release: {e}")).unwrap())
             .lines()
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+
+        let release = read_lines
             .get(0)
             .unwrap()
-            .unwrap_or("unknown".to_string());
+            .as_ref();
 
-        if !release[0..=1]._is_alpha() {
-            let codename = lookup_codename(&x, release).unwrap_or("n/a".to_string());
+        // borrow checkers :c
+        let unknown = &"unknown".to_string();
+        let release = match release {
+            Ok(release) => release,
+            Err(_) => unknown,
+        };
+
+        if !&release[0..=1]._is_alpha() {
+            let codename = lookup_codename(&x, release.to_string()).unwrap_or("n/a".to_string());
             lsbinfo.codename = Some(codename);
-            Some(release.clone())
+            Some(release.to_string())
         } else if release.ends_with("/sid") {
             let strip = release.strip_suffix("/sid").unwrap();
             let strip2 = strip.to_lowercase();
@@ -245,7 +252,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
                 None
             }
         } else {
-            Some(release)
+            Some(release.to_string())
         }
     };
 
@@ -271,7 +278,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
             let codename = if let Some(release) = release {
                 lookup_codename(&x, release.clone())
             } else {
-                let release = rinfo.0.get("suite").unwrap_or(&"unstable".to_string());
+                let release = rinfo.0.get("suite").cloned().unwrap_or("unstable".to_string());
                 if release == "testing" {
                     x.debian_testing_codename.clone()
                 } else {
@@ -284,11 +291,11 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
         }
     }
 
-    if let Some(release) = lsbinfo.release {
+    if let Some(ref release) = lsbinfo.release {
         lsbinfo.description = lsbinfo.description.map(|d| format!("{d} {release}"));
     }
 
-    if let Some(codename) = lsbinfo.codename {
+    if let Some(ref codename) = lsbinfo.codename {
         lsbinfo.description = lsbinfo.description.map(|d| format!("{d} {codename}"));
     }
 
@@ -320,7 +327,7 @@ fn guess_release_from_apt(
             )].into_iter().collect()
         );
 
-    if releases.err().is_some() {
+    if releases.as_ref().err().is_some() {
         return None
     }
 
@@ -390,12 +397,11 @@ fn parse_apt_policy() -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
         .wait_with_output()?;
 
     // SAFETY: this shall be UTF-8
-    let lines = String::from_utf8(apt_cache_policy_output.stdout)
-        .expect("This byte sequence is not valid UTF-8").lines();
 
     let regex = Regex::new(r#"(-?\d+)"#).unwrap();
 
-    for line in lines {
+    for line in String::from_utf8(apt_cache_policy_output.stdout)
+        .expect("This byte sequence is not valid UTF-8").lines() {
         let line = line.trim();
 
         if line.starts_with("release") {
@@ -442,7 +448,7 @@ impl FromStr for AptPolicy {
         for bit in bits {
             let kv = bit.splitn(2, '=').collect::<Vec<_>>();
             if kv.len() > 1 {
-                let (k, v) = (kv.get(0).unwrap(), kv.get(1).unwrap());
+                let (k, v) = (kv.get(0).unwrap(), kv.get(1).cloned().unwrap());
                 if let Some(kl) = long_names.get(k) {
                     hash_map.insert(kl, v);
                 }
@@ -465,7 +471,7 @@ fn lookup_codename(x: &X, release: String) -> Option<String> {
                 format!("{c1}")
             };
 
-            x.codename_lookup.iter().find(|p| p.version == short).map(|a| a.version)
+            x.codename_lookup.iter().find(|p| p.version == short).map(|a| a.version.clone())
         }
     }
 }
