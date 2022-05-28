@@ -1,11 +1,12 @@
-use std::collections::HashSet;
-use std::env::var;
+use std::collections::{HashMap, HashSet};
+use std::env::{var, vars};
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader, ErrorKind};
-use std::path::{Path, PathBuf};
+use std::io::{BufRead, BufReader};
+use std::path::{Path};
 use std::process::Command;
-use fancy_regex::Regex;
+use std::str::FromStr;
+use fancy_regex::{Regex};
 use once_cell::sync::Lazy;
 use voca_rs::Voca;
 
@@ -193,6 +194,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
     let mut lsbinfo = DistroInfo { id: Some("Debian".to_string()), ..DistroInfo::default() };
     let dpkg_origin = dpkg_origin();
     {
+        // FIXME: this is not correct. should skip operation instead of panicking
         let f = File::open(dpkg_origin).map_err(|e| eprintln!("Unable to open dpkg_origin: {e}")).unwrap();
         let f = BufReader::new(f);
         let lines = f.lines().map(|a| a.unwrap()).collect::<Vec<_>>();
@@ -210,12 +212,270 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
 
     let x = get_distro_info(lsbinfo.id.clone());
 
-    let kernel = uname_rs::Uname::new()?;
+    let kernel = uname_rs::Uname::new()?.sysname.as_str();
+
+    let os = match kernel {
+        x @ ("Linux" | "Hurd" | "NetBSD") => format!("GNU/{x}").as_str(),
+        "FreeBSD" => "GNU/kFreeBSD",
+        x @ ("GNU/Linux" | "GNU/kFreeBSD") => x,
+        _ => "GNU"
+    };
+
+    lsbinfo.description = Some(format!("{id}s {os}s", id = lsbinfo.id.unwrap_or_default()));
+    lsbinfo.release = {
+        let path = etc_debian_version();
+        // FIXME: this is not correct. should skip operation instead of panicking
+        let release = BufReader::new(File::open(path).map_err(|e| eprintln!("Unable to open debian_release: {e}")).unwrap())
+            .lines()
+            .collect::<Vec<_>>()
+            .get(0)
+            .unwrap()
+            .unwrap_or("unknown".to_string());
+
+        if !release[0..=1]._is_alpha() {
+            let codename = lookup_codename(&x, release).unwrap_or("n/a".to_string());
+            lsbinfo.codename = Some(codename);
+            Some(release.clone())
+        } else if release.ends_with("/sid") {
+            let strip = release.strip_suffix("/sid").unwrap();
+            let strip2 = strip.to_lowercase();
+            if strip2 != "testing" {
+                Some(strip.to_string())
+            } else {
+                None
+            }
+        } else {
+            Some(release)
+        }
+    };
+
+    if lsbinfo.codename.is_none() {
+        let rinfo = guess_release_from_apt(None, None, None, None, None, None);
+        if let Some(mut rinfo) = rinfo {
+            let release = {
+                let release = rinfo.0.get("version");
+
+                if let Some(release) = release {
+                    if rinfo.0.get("origin").unwrap() == &"Debian Ports".to_string() &&
+                        ["ftp.ports.debian.org", "ftp.debian-ports.org"].contains(&rinfo.0.get("label").unwrap().as_str()) {
+                        rinfo.0.insert("suite".to_string(), "unstable".to_string());
+                        None
+                    } else {
+                        Some(release)
+                    }
+                } else {
+                    release
+                }
+            };
+
+            let codename = if let Some(release) = release {
+                lookup_codename(&x, release.clone())
+            } else {
+                let release = rinfo.0.get("suite").unwrap_or(&"unstable".to_string());
+                if release == "testing" {
+                    x.debian_testing_codename.clone()
+                } else {
+                    Some("sid".to_string())
+                }
+            };
+
+            lsbinfo.release = release.cloned();
+            lsbinfo.codename = codename;
+        }
+    }
+
+    if let Some(release) = lsbinfo.release {
+        lsbinfo.description = lsbinfo.description.map(|d| format!("{d} {release}"));
+    }
+
+    if let Some(codename) = lsbinfo.codename {
+        lsbinfo.description = lsbinfo.description.map(|d| format!("{d} {codename}"));
+    }
 
     Ok(lsbinfo.clone())
 }
 
+fn guess_release_from_apt(
+    origin: Option<String>,
+    component: Option<String>,
+    ignore_suites: Option<Vec<String>>,
+    label: Option<String>,
+    alternate_olabels_ports: Option<HashMap<String, Vec<String>>>,
+    x: &X,
+) -> Option<AptPolicy> {
+    let releases = parse_apt_policy();
+    let origin = origin.unwrap_or("Debian".to_string());
+    let component = component.unwrap_or("main".to_string());
+    let ignore_suites = ignore_suites
+        .unwrap_or(vec!["experimental".to_string()]);
+    let label = label.unwrap_or("Debian".to_string());
+    let alternate_olabels_ports = alternate_olabels_ports
+        .unwrap_or(
+            [(
+                "Debian Ports".to_string(),
+                vec![
+                    "ftp.ports.debian.org".to_string(),
+                    "ftp.debian-ports.org".to_string(),
+                ]
+            )].into_iter().collect()
+        );
+
+    if releases.err().is_some() {
+        return None
+    }
+
+    let releases = releases.ok().unwrap();
+    if releases.is_empty() {
+        return None
+    }
+
+    let mut dim = vec![];
+    for release in releases {
+        let policies = &release.policy.0;
+        let p_origin = policies.get(&"policies".to_string()).cloned().unwrap_or_default();
+        let p_suite = policies.get(&"suite".to_string()).cloned().unwrap_or_default();
+        let p_component = policies.get(&"component".to_string()).cloned().unwrap_or_default();
+        let p_label = policies.get(&"label".to_string()).cloned().unwrap_or_default();
+
+        if p_origin == origin &&
+            !ignore_suites.contains(&p_suite) &&
+            p_component == component &&
+            p_label == label ||(
+                alternate_olabels_ports.contains_key(&p_origin) &&
+                alternate_olabels_ports.get(&p_origin).unwrap().contains(&label)) {
+            dim.push(release);
+        }
+    }
+
+    if dim.is_empty() {
+        return None
+    }
+
+    dim.sort_by_key(|a| a.priority);
+    dim.reverse();
+
+    let dim = dim;
+
+    let max_priority = dim.get(0).unwrap().priority;
+    let mut releases = dim.iter().filter(|x| x.priority == max_priority).collect::<Vec<_>>();
+    releases.sort_by_key(|a| {
+        let policy = a.policy.0.get(&*"suite".to_string());
+
+        if let Some(suite) = policy {
+            if x.release_order.contains(suite) {
+                x.release_order.len() - x.release_order.iter().position(|a| a == suite).unwrap()
+            } else {
+                // FIXME: this is not correct in strict manner.
+                suite.parse::<f64>().unwrap_or(0.0) as usize
+            }
+        } else {
+            0
+        }
+    });
+
+    Some(releases.get(0).cloned().unwrap().clone().policy)
+}
+
+fn parse_apt_policy() -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
+    let mut data = vec![];
+    use tap::tap::*;
+    let apt_cache_policy_output = Command::new("apt-cache")
+        .arg("policy")
+        .envs(
+            vars()
+                .collect::<HashMap<_, _>>()
+                .tap_mut(|h| { h.insert("LC_ALL".to_string(), "C.UTF-8".to_string()); })
+        )
+        .spawn()?
+        .wait_with_output()?;
+
+    // SAFETY: this shall be UTF-8
+    let lines = String::from_utf8(apt_cache_policy_output.stdout)
+        .expect("This byte sequence is not valid UTF-8").lines();
+
+    let regex = Regex::new(r#"(-?\d+)"#).unwrap();
+
+    for line in lines {
+        let line = line.trim();
+
+        if line.starts_with("release") {
+            let priority = regex.captures(line).unwrap()
+                .map(|c| c.get(1).unwrap())
+                .map(|c1| c1.as_str().parse::<i64>().unwrap())
+                .unwrap();
+            let bits = line.splitn(2, ' ').collect::<Vec<_>>();
+            if bits.len() > 1 {
+                data.push(AptCachePolicyEntry {
+                    priority,
+                    policy: bits.get(1).unwrap().parse::<AptPolicy>().unwrap()
+                })
+            }
+        }
+    }
+
+    Ok(data)
+}
+
+#[derive(Eq, PartialEq, Clone)]
+struct AptCachePolicyEntry {
+    priority: i64,
+    policy: AptPolicy
+}
+
+#[derive(Eq, PartialEq, Clone)]
+struct AptPolicy(HashMap<String, String>);
+
+impl FromStr for AptPolicy {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let long_names = vec![
+            ("v", "version"),
+            ("o", "origin"),
+            ("a", "suite"),
+            ("c", "component"),
+            ("l", "label"),
+        ].into_iter().collect::<HashMap<_, _>>();
+
+        let bits = s.split(',').collect::<Vec<_>>();
+        let mut hash_map = HashMap::with_capacity(bits.len());
+        for bit in bits {
+            let kv = bit.splitn(2, '=').collect::<Vec<_>>();
+            if kv.len() > 1 {
+                let (k, v) = (kv.get(0).unwrap(), kv.get(1).unwrap());
+                if let Some(kl) = long_names.get(k) {
+                    hash_map.insert(kl, v);
+                }
+            }
+        }
+
+        Ok(Self(hash_map.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))
+    }
+}
+
+fn lookup_codename(x: &X, release: String) -> Option<String> {
+    let regex = Regex::new(r#"(\d+)\.(\d+)(r(\d+))?"#).unwrap();
+    match regex.captures(release.as_str()).unwrap() {
+        None => None
+        Some(captures) => {
+            let c1 = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
+            let short = if c1 < 7 {
+                format!("{c1}.{c2}", c2 = captures.get(2).unwrap().as_str())
+            } else {
+                format!("{c1}")
+            };
+
+            x.codename_lookup.iter().find(|p| p.version == short).map(|a| a.version)
+        }
+    }
+}
+
+fn etc_debian_version() -> impl AsRef<Path> {
+    var("LSB_ETC_DEBIAN_VERSION").unwrap_or("/etc/debian_version".to_string())
+}
+
 use serde::Deserialize;
+
 #[derive(Deserialize, Eq, PartialEq, Clone)]
 struct DistroInfoCsvRecord {
     version: String,
