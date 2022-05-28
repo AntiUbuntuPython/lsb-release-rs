@@ -250,7 +250,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
     };
 
     if lsbinfo.codename.is_none() {
-        let rinfo = guess_release_from_apt(None, None, None, None, None, None);
+        let rinfo = guess_release_from_apt(None, None, None, None, None, &x);
         if let Some(mut rinfo) = rinfo {
             let release = {
                 let release = rinfo.0.get("version");
@@ -456,7 +456,7 @@ impl FromStr for AptPolicy {
 fn lookup_codename(x: &X, release: String) -> Option<String> {
     let regex = Regex::new(r#"(\d+)\.(\d+)(r(\d+))?"#).unwrap();
     match regex.captures(release.as_str()).unwrap() {
-        None => None
+        None => None,
         Some(captures) => {
             let c1 = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
             let short = if c1 < 7 {
