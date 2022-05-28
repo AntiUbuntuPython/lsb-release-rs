@@ -24,7 +24,7 @@ pub(crate) trait LSBInfo {
 
 struct LSBInfoGetter;
 
-static modnamare: Lazy<Regex> = Lazy::new(|| Regex::new(r#"lsb-(?P<module>[a-z0-9]+)-(?P<arch>[^ ]+)(?: \(= (?P<version>[0-9.]+)\))?"#).unwrap());
+static modnamare: Lazy<Regex> = Lazy::new(|| Regex::new(r#"lsb-(?P<module>[a-z\d]+)-(?P<arch>[^ ]+)(?: \(= (?P<version>[\d.]+)\))?"#).unwrap());
 
 // replacement for /usr/share/pyshared/lsb_release.py
 impl LSBInfo for LSBInfoGetter {
@@ -46,7 +46,6 @@ impl LSBInfo for LSBInfoGetter {
 
     // this is check_modules_installed()
     fn lsb_version(&self) -> Option<Vec<String>> {
-        use std::env;
         let mut dpkg_query_args = vec![
             "-f".to_string(),
             // NOTE: this is dpkg-query formatter, no need to interpolate
@@ -68,8 +67,8 @@ impl LSBInfo for LSBInfoGetter {
 
         dpkg_query_args.append(&mut packages);
 
-        let dpkg_query_result = Command::new("dpkg-query")
-            .envs(env::vars())
+        #[allow(unused_variables)] let dpkg_query_result = Command::new("dpkg-query")
+            .envs(vars())
             .args(dpkg_query_args)
             .spawn().ok()?
             .wait_with_output().ok()?;
@@ -108,15 +107,16 @@ impl LSBInfo for LSBInfoGetter {
                 let named_groups = mob.unwrap();
 
                 let module = named_groups.name("module").unwrap().as_str();
-                let arch = named_groups.name("arch").unwrap().as_str();
+                // false-positive
+                #[allow(unused_variables)] let arch = named_groups.name("arch").unwrap().as_str();
                 if named_groups.name("version").is_some() {
-                    let version = named_groups.name("version").unwrap().as_str();
+                    #[allow(unused_variables)] let version = named_groups.name("version").unwrap().as_str();
                     let module = format!("{module}s-{version}s-{arch}s");
 
                     modules.insert(module);
                 } else {
                     for v in valid_lsb_versions(version, module) {
-                        let version = v;
+                        #[allow(unused_variables)] let version = v;
                         let module = format!("{module}s-{version}s-{arch}s");
 
                         modules.insert(module);
@@ -179,7 +179,7 @@ impl DistroInfo {
         self.release.is_none() && self.codename.is_none() && self.id.is_none() && self.description.is_none()
     }
 
-    fn merged(&self, other: Self) -> Self {
+    fn merged(&self, other: &Self) -> Self {
         Self {
             release: self.release.as_ref().or(other.release.as_ref()).cloned(),
             codename: self.codename.as_ref().or(other.codename.as_ref()).cloned(),
@@ -197,7 +197,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
         // FIXME: this is not correct. should skip operation instead of panicking
         let f = File::open(dpkg_origin).map_err(|e| eprintln!("Unable to open dpkg_origin: {e}")).unwrap();
         let f = BufReader::new(f);
-        let lines = f.lines().map(|a| a.unwrap()).collect::<Vec<_>>();
+        let lines = f.lines().map(Result::unwrap).collect::<Vec<_>>();
         for line in lines {
             let elements = line.splitn(2, ": ").collect::<Vec<_>>();
             let (header, content) = (elements.get(0).unwrap(), elements.get(1).unwrap());
@@ -212,8 +212,8 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
 
     let x = get_distro_info(lsbinfo.id.clone());
 
-    let os = match uname_rs::Uname::new()?.sysname.as_str() {
-        x @ ("Linux" | "Hurd" | "NetBSD") => format!("GNU/{x}"),
+    #[allow(unused_variables)] let os = match uname_rs::Uname::new()?.sysname.as_str() {
+        #[allow(unused_variables)] x @ ("Linux" | "Hurd" | "NetBSD") => format!("GNU/{x}"),
         "FreeBSD" => "GNU/kFreeBSD".to_string(),
         x @ ("GNU/Linux" | "GNU/kFreeBSD") => x.to_string(),
         _ => "GNU".to_string(),
@@ -240,16 +240,16 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
         };
 
         if !&release[0..=1]._is_alpha() {
-            let codename = lookup_codename(&x, release.to_string()).unwrap_or("n/a".to_string());
+            let codename = lookup_codename(&x, release).unwrap_or_else(|| "n/a".to_string());
             lsbinfo.codename = Some(codename);
             Some(release.to_string())
         } else if release.ends_with("/sid") {
             let strip = release.strip_suffix("/sid").unwrap();
             let strip2 = strip.to_lowercase();
-            if strip2 != "testing" {
-                Some(strip.to_string())
-            } else {
+            if strip2 == "testing" {
                 None
+            } else {
+                Some(strip.to_string())
             }
         } else {
             Some(release.to_string())
@@ -276,11 +276,11 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
             };
 
             let codename = if let Some(release) = release {
-                lookup_codename(&x, release.clone())
+                lookup_codename(&x, release)
             } else {
-                let release = rinfo.0.get("suite").cloned().unwrap_or("unstable".to_string());
+                let release = rinfo.0.get("suite").cloned().unwrap_or_else(|| "unstable".to_string());
                 if release == "testing" {
-                    x.debian_testing_codename.clone()
+                    x.debian_testing_codename
                 } else {
                     Some("sid".to_string())
                 }
@@ -299,7 +299,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
         lsbinfo.description = lsbinfo.description.map(|d| format!("{d} {codename}"));
     }
 
-    Ok(lsbinfo.clone())
+    Ok(lsbinfo)
 }
 
 fn guess_release_from_apt(
@@ -311,21 +311,19 @@ fn guess_release_from_apt(
     x: &X,
 ) -> Option<AptPolicy> {
     let releases = parse_apt_policy();
-    let origin = origin.unwrap_or("Debian".to_string());
-    let component = component.unwrap_or("main".to_string());
+    let origin = origin.unwrap_or_else(|| "Debian".to_string());
+    let component = component.unwrap_or_else(|| "main".to_string());
     let ignore_suites = ignore_suites
-        .unwrap_or(vec!["experimental".to_string()]);
-    let label = label.unwrap_or("Debian".to_string());
+        .unwrap_or_else(|| vec!["experimental".to_string()]);
+    let label = label.unwrap_or_else(|| "Debian".to_string());
     let alternate_olabels_ports = alternate_olabels_ports
-        .unwrap_or(
-            [(
+        .unwrap_or_else(|| [(
                 "Debian Ports".to_string(),
                 vec![
                     "ftp.ports.debian.org".to_string(),
                     "ftp.debian-ports.org".to_string(),
                 ]
-            )].into_iter().collect()
-        );
+            )].into_iter().collect());
 
     if releases.as_ref().err().is_some() {
         return None
@@ -368,24 +366,19 @@ fn guess_release_from_apt(
     releases.sort_by_key(|a| {
         let policy = a.policy.0.get(&*"suite".to_string());
 
-        if let Some(suite) = policy {
-            if x.release_order.contains(suite) {
-                x.release_order.len() - x.release_order.iter().position(|a| a == suite).unwrap()
-            } else {
-                // FIXME: this is not correct in strict manner.
-                suite.parse::<f64>().unwrap_or(0.0) as usize
-            }
+        policy.map_or(0, |suite| if x.release_order.contains(suite) {
+            x.release_order.len() - x.release_order.iter().position(|a| a == suite).unwrap()
         } else {
-            0
-        }
+            // FIXME: this is not correct in strict manner.
+            suite.parse::<f64>().unwrap_or(0.0) as usize
+        })
     });
 
-    Some(releases.get(0).cloned().unwrap().clone().policy)
+    Some(releases.get(0).copied().unwrap().clone().policy)
 }
 
 fn parse_apt_policy() -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
     let mut data = vec![];
-    use tap::tap::*;
     let apt_cache_policy_output = Command::new("apt-cache")
         .arg("policy")
         .envs(
@@ -414,7 +407,7 @@ fn parse_apt_policy() -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
                 data.push(AptCachePolicyEntry {
                     priority,
                     policy: bits.get(1).unwrap().parse::<AptPolicy>().unwrap()
-                })
+                });
             }
         }
     }
@@ -448,20 +441,20 @@ impl FromStr for AptPolicy {
         for bit in bits {
             let kv = bit.splitn(2, '=').collect::<Vec<_>>();
             if kv.len() > 1 {
-                let (k, v) = (kv.get(0).unwrap(), kv.get(1).cloned().unwrap());
+                let (k, v) = (kv.get(0).unwrap(), kv.get(1).copied().unwrap());
                 if let Some(kl) = long_names.get(k) {
                     hash_map.insert(kl, v);
                 }
             }
         }
 
-        Ok(Self(hash_map.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))
+        Ok(Self(hash_map.into_iter().map(|(k, v)| ((*k).to_string(), v.to_string())).collect()))
     }
 }
 
-fn lookup_codename(x: &X, release: String) -> Option<String> {
+fn lookup_codename(x: &X, release: &str) -> Option<String> {
     let regex = Regex::new(r#"(\d+)\.(\d+)(r(\d+))?"#).unwrap();
-    match regex.captures(release.as_str()).unwrap() {
+    match regex.captures(release).unwrap() {
         None => None,
         Some(captures) => {
             let c1 = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
@@ -477,10 +470,11 @@ fn lookup_codename(x: &X, release: String) -> Option<String> {
 }
 
 fn etc_debian_version() -> impl AsRef<Path> {
-    var("LSB_ETC_DEBIAN_VERSION").unwrap_or("/etc/debian_version".to_string())
+    var("LSB_ETC_DEBIAN_VERSION").unwrap_or_else(|_| "/etc/debian_version".to_string())
 }
 
 use serde::Deserialize;
+use tap::Tap;
 
 #[derive(Deserialize, Eq, PartialEq, Clone)]
 struct DistroInfoCsvRecord {
@@ -532,7 +526,7 @@ fn get_distro_info(origin: Option<String>) -> X {
     }
 }
 
-fn get_distro_csv(origin: String) -> impl AsRef<Path> {
+fn get_distro_csv(#[allow(unused_variables)] origin: String) -> impl AsRef<Path> {
     let path = format!("/usr/share/distro-info/{origin}.csv");
     if Path::new(&path).exists() {
         path
@@ -550,7 +544,7 @@ fn dpkg_origin() -> impl AsRef<Path> {
 fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>> {
     File::open(path).map(|read| {
         let read = BufReader::new(read);
-        let unwraped = read.lines().map(|a| a.unwrap()).collect::<Vec<_>>();
+        let unwraped = read.lines().map(Result::unwrap).collect::<Vec<_>>();
         for line4 in unwraped {
             let line = line4.as_str().trim();
             if line.is_empty() {
@@ -573,8 +567,6 @@ fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>
             if arg.is_empty() {
                 continue
             }
-
-            use voca_rs::Voca;
 
             match *var {
                 "VERSION_ID" => {
@@ -602,7 +594,7 @@ fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>
 fn get_distro_information() -> Result<DistroInfo, Box<dyn Error>> {
     let lsbinfo = get_partial_info(get_path())?;
     if lsbinfo.is_partial() {
-        let lsbinfo = lsbinfo.merged(guess_debian_release()?);
+        let lsbinfo = lsbinfo.merged(&guess_debian_release()?);
         return Ok(lsbinfo)
     }
 
