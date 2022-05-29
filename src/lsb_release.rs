@@ -253,7 +253,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
         id = lsbinfo.id.clone().unwrap_or_default()
     ));
     lsbinfo.release = {
-        let path = etc_debian_version();
+        let path = PathGetter::debian_version();
         // FIXME: this is not correct. should skip operation instead of panicking
         let read_lines = &BufReader::new(
             File::open(path)
@@ -566,10 +566,6 @@ impl FromStr for AptPolicy {
     }
 }
 
-fn etc_debian_version() -> impl AsRef<Path> {
-    var("LSB_ETC_DEBIAN_VERSION").unwrap_or_else(|_| "/etc/debian_version".to_string())
-}
-
 use serde::Deserialize;
 
 #[derive(Deserialize, Eq, PartialEq, Clone)]
@@ -640,8 +636,6 @@ fn get_distro_information() -> Result<DistroInfo, Box<dyn Error>> {
     Ok(lsbinfo)
 }
 
-
-
 pub fn grub_info() -> impl LSBInfo {
     LSBInfoGetter
 }
@@ -665,5 +659,9 @@ impl PathGetter {
             // fallback
             "/usr/share/distro-info/debian.csv".to_string()
         }
+    }
+
+    fn debian_version() -> impl AsRef<Path> {
+        var("LSB_ETC_DEBIAN_VERSION").unwrap_or_else(|_| "/etc/debian_version".to_string())
     }
 }
