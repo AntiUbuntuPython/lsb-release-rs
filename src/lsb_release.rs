@@ -1,7 +1,7 @@
-use fancy_regex::{Captures, Regex};
+use fancy_regex::Regex;
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
-use std::env::{var, vars};
+use std::env::var;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::str::FromStr;
 use voca_rs::Voca;
 
-pub(crate) trait LSBInfo {
+pub trait LSBInfo {
     fn id(&self) -> Option<String>;
 
     fn description(&self) -> Option<String>;
@@ -358,7 +358,7 @@ fn guess_release_from_apt(
     }
 
     let dim = {
-        let mut dim = releases.into_iter().filter(|release| {
+        let mut dim = releases.iter().filter(|release| {
             let p_origin = release.policy.origin
                 .clone()
                 .unwrap_or_default();
@@ -520,7 +520,6 @@ fn etc_debian_version() -> impl AsRef<Path> {
 }
 
 use serde::Deserialize;
-use tap::Tap;
 
 #[derive(Deserialize, Eq, PartialEq, Clone)]
 struct DistroInfoCsvRecord {
@@ -657,6 +656,6 @@ fn get_path() -> impl AsRef<Path> {
     var("LSB_OS_RELEASE").unwrap_or_else(|_| "/usr/lib/os-release".to_string())
 }
 
-pub(crate) fn grub_info() -> impl LSBInfo {
+pub fn grub_info() -> impl LSBInfo {
     LSBInfoGetter
 }
