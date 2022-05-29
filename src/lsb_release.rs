@@ -218,7 +218,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
         id: Some("Debian".to_string()),
         ..DistroInfo::default()
     };
-    let dpkg_origin = dpkg_origin();
+    let dpkg_origin = PathGetter::dpkg_origin();
     {
         // FIXME: this is not correct. should skip operation instead of panicking
         let f = File::open(dpkg_origin)
@@ -438,7 +438,7 @@ impl X {
 
     fn get_distro_info(origin: Option<String>) -> Self {
         let origin = origin.unwrap_or_else(|| "Debian".to_string());
-        let csv_file = get_distro_csv(origin.as_str());
+        let csv_file = PathGetter::distro_info_csv(origin.as_str());
 
         let mut codename_lookup = csv::Reader::from_path(csv_file)
             .unwrap()
@@ -578,20 +578,6 @@ struct DistroInfoCsvRecord {
     series: String,
 }
 
-fn get_distro_csv(#[allow(unused_variables)] origin: &str) -> impl AsRef<Path> {
-    let path = format!("/usr/share/distro-info/{origin}.csv");
-    if Path::new(&path).exists() {
-        path
-    } else {
-        // fallback
-        "/usr/share/distro-info/debian.csv".to_string()
-    }
-}
-
-fn dpkg_origin() -> impl AsRef<Path> {
-    var("LSB_ETC_DPKG_ORIGINS_DEFAULT").unwrap_or_else(|_| "/etc/dpkg/origins/default".to_string())
-}
-
 // this is get_os_release()
 fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>> {
     File::open(path)
@@ -645,7 +631,7 @@ fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>
 }
 
 fn get_distro_information() -> Result<DistroInfo, Box<dyn Error>> {
-    let lsbinfo = get_partial_info(get_path())?;
+    let lsbinfo = get_partial_info(PathGetter::lsb_os_release())?;
     if lsbinfo.is_partial() {
         let lsbinfo = lsbinfo.merged(&guess_debian_release()?);
         return Ok(lsbinfo);
@@ -654,10 +640,30 @@ fn get_distro_information() -> Result<DistroInfo, Box<dyn Error>> {
     Ok(lsbinfo)
 }
 
-fn get_path() -> impl AsRef<Path> {
-    var("LSB_OS_RELEASE").unwrap_or_else(|_| "/usr/lib/os-release".to_string())
-}
+
 
 pub fn grub_info() -> impl LSBInfo {
     LSBInfoGetter
+}
+
+struct PathGetter;
+
+impl PathGetter {
+    fn lsb_os_release() -> impl AsRef<Path> {
+        var("LSB_OS_RELEASE").unwrap_or_else(|_| "/usr/lib/os-release".to_string())
+    }
+
+    fn dpkg_origin() -> impl AsRef<Path> {
+        var("LSB_ETC_DPKG_ORIGINS_DEFAULT").unwrap_or_else(|_| "/etc/dpkg/origins/default".to_string())
+    }
+
+    fn distro_info_csv(#[allow(unused_variables)] origin: &str) -> impl AsRef<Path> {
+        let path = format!("/usr/share/distro-info/{origin}.csv");
+        if Path::new(&path).exists() {
+            path
+        } else {
+            // fallback
+            "/usr/share/distro-info/debian.csv".to_string()
+        }
+    }
 }
