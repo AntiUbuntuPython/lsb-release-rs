@@ -210,120 +210,121 @@ impl DistroInfo {
                 .cloned(),
         }
     }
-}
 
-// this is guess_debian_release()
-fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
-    let mut lsbinfo = DistroInfo {
-        id: Some("Debian".to_string()),
-        ..DistroInfo::default()
-    };
-    let dpkg_origin = PathGetter::dpkg_origin();
-    {
-        // FIXME: this is not correct. should skip operation instead of panicking
-        let f = File::open(dpkg_origin)
-            .map_err(|e| eprintln!("Unable to open dpkg_origin: {e}"))
-            .unwrap();
-        let f = BufReader::new(f);
-        let lines = f.lines().map(Result::unwrap);
-        for line in lines {
-            let elements = line.splitn(2, ": ").collect::<Vec<_>>();
-            let (header, content) = (elements[0], elements[1]);
-            let header = header._lower_case();
-            let content = content.trim();
-            if header == "vendor" {
-                lsbinfo.id = Some(content.to_string());
+
+    // this is guess_debian_release()
+    fn guess_debian_release() -> Result<Self, Box<dyn Error>> {
+        let mut lsbinfo = Self {
+            id: Some("Debian".to_string()),
+            ..DistroInfo::default()
+        };
+        let dpkg_origin = PathGetter::dpkg_origin();
+        {
+            // FIXME: this is not correct. should skip operation instead of panicking
+            let f = File::open(dpkg_origin)
+                .map_err(|e| eprintln!("Unable to open dpkg_origin: {e}"))
+                .unwrap();
+            let f = BufReader::new(f);
+            let lines = f.lines().map(Result::unwrap);
+            for line in lines {
+                let elements = line.splitn(2, ": ").collect::<Vec<_>>();
+                let (header, content) = (elements[0], elements[1]);
+                let header = header._lower_case();
+                let content = content.trim();
+                if header == "vendor" {
+                    lsbinfo.id = Some(content.to_string());
+                }
             }
         }
-    }
 
-    let x = X::get_distro_info(lsbinfo.id.clone());
+        let x = X::get_distro_info(lsbinfo.id.clone());
 
-    #[allow(unused_variables)]
-    let os = match uname_rs::Uname::new()?.sysname.as_str() {
         #[allow(unused_variables)]
-        x @ ("Linux" | "Hurd" | "NetBSD") => format!("GNU/{x}"),
-        "FreeBSD" => "GNU/kFreeBSD".to_string(),
-        x @ ("GNU/Linux" | "GNU/kFreeBSD") => x.to_string(),
-        _ => "GNU".to_string(),
-    };
+            let os = match uname_rs::Uname::new()?.sysname.as_str() {
+            #[allow(unused_variables)]
+            x @ ("Linux" | "Hurd" | "NetBSD") => format!("GNU/{x}"),
+            "FreeBSD" => "GNU/kFreeBSD".to_string(),
+            x @ ("GNU/Linux" | "GNU/kFreeBSD") => x.to_string(),
+            _ => "GNU".to_string(),
+        };
 
-    lsbinfo.description = Some(format!(
-        "{id}s {os}s",
-        id = lsbinfo.id.clone().unwrap_or_default()
-    ));
-    lsbinfo.release = {
-        let path = PathGetter::debian_version();
-        // FIXME: this is not correct. should skip operation instead of panicking
-        let read_lines = &BufReader::new(
-            File::open(path)
-                .map_err(|e| eprintln!("Unable to open debian_release: {e}"))
-                .unwrap(),
-        )
-        .lines()
-        .collect::<Vec<_>>();
+        lsbinfo.description = Some(format!(
+            "{id}s {os}s",
+            id = lsbinfo.id.clone().unwrap_or_default()
+        ));
+        lsbinfo.release = {
+            let path = PathGetter::debian_version();
+            // FIXME: this is not correct. should skip operation instead of panicking
+            let read_lines = &BufReader::new(
+                File::open(path)
+                    .map_err(|e| eprintln!("Unable to open debian_release: {e}"))
+                    .unwrap(),
+            )
+                .lines()
+                .collect::<Vec<_>>();
 
-        let release = read_lines[0].as_ref();
+            let release = read_lines[0].as_ref();
 
-        // borrow checkers :c
-        let unknown = &"unknown".to_string();
-        let release = release.unwrap_or(unknown);
+            // borrow checkers :c
+            let unknown = &"unknown".to_string();
+            let release = release.unwrap_or(unknown);
 
-        if !&release[0..=1]._is_alpha() {
-            let codename = x.lookup_codename(release).unwrap_or_else(|| "n/a".to_string());
-            lsbinfo.codename = Some(codename);
-            Some(release.to_string())
-        } else if release.ends_with("/sid") {
-            let strip = release.strip_suffix("/sid").unwrap();
-            let strip2 = strip.to_lowercase();
-            (strip2 != "testing").then(|| strip.to_string())
-        } else {
-            Some(release.to_string())
-        }
-    };
+            if !&release[0..=1]._is_alpha() {
+                let codename = x.lookup_codename(release).unwrap_or_else(|| "n/a".to_string());
+                lsbinfo.codename = Some(codename);
+                Some(release.to_string())
+            } else if release.ends_with("/sid") {
+                let strip = release.strip_suffix("/sid").unwrap();
+                let strip2 = strip.to_lowercase();
+                (strip2 != "testing").then(|| strip.to_string())
+            } else {
+                Some(release.to_string())
+            }
+        };
 
-    if lsbinfo.codename.is_none() {
-        let rinfo = x.guess_release_from_apt(None, None, None, None, None);
-        if let Some(mut rinfo) = rinfo {
-            let release = rinfo.version.and_then(|release| {
-                let condition = rinfo.origin.unwrap() == *"Debian Ports"
-                    && ["ftp.ports.debian.org", "ftp.debian-ports.org"]
-                    .contains(&rinfo.label.unwrap().as_str());
+        if lsbinfo.codename.is_none() {
+            let rinfo = x.guess_release_from_apt(None, None, None, None, None);
+            if let Some(mut rinfo) = rinfo {
+                let release = rinfo.version.and_then(|release| {
+                    let condition = rinfo.origin.unwrap() == *"Debian Ports"
+                        && ["ftp.ports.debian.org", "ftp.debian-ports.org"]
+                        .contains(&rinfo.label.unwrap().as_str());
 
-                if condition {
-                    rinfo.suite = Some("unstable".to_string());
-                }
-
-                (!condition).then(|| release)
-            });
-
-            let codename = release.clone().map_or_else(
-                || {
-                    let release = rinfo.suite
-                        .unwrap_or_else(|| "unstable".to_string());
-                    if release == "testing" {
-                        x.debian_testing_codename.clone()
-                    } else {
-                        Some("sid".to_string())
+                    if condition {
+                        rinfo.suite = Some("unstable".to_string());
                     }
-                },
-                |release| x.lookup_codename(release.as_str())
-            );
 
-            lsbinfo.release = release;
-            lsbinfo.codename = codename;
+                    (!condition).then(|| release)
+                });
+
+                let codename = release.clone().map_or_else(
+                    || {
+                        let release = rinfo.suite
+                            .unwrap_or_else(|| "unstable".to_string());
+                        if release == "testing" {
+                            x.debian_testing_codename.clone()
+                        } else {
+                            Some("sid".to_string())
+                        }
+                    },
+                    |release| x.lookup_codename(release.as_str())
+                );
+
+                lsbinfo.release = release;
+                lsbinfo.codename = codename;
+            }
         }
-    }
 
-    if let Some(ref release) = lsbinfo.release {
-        lsbinfo.description = lsbinfo.description.map(|d| format!("{d} {release}"));
-    }
+        if let Some(ref release) = lsbinfo.release {
+            lsbinfo.description = lsbinfo.description.map(|d| format!("{d} {release}"));
+        }
 
-    if let Some(ref codename) = lsbinfo.codename {
-        lsbinfo.description = lsbinfo.description.map(|d| format!("{d} {codename}"));
-    }
+        if let Some(ref codename) = lsbinfo.codename {
+            lsbinfo.description = lsbinfo.description.map(|d| format!("{d} {codename}"));
+        }
 
-    Ok(lsbinfo)
+        Ok(lsbinfo)
+    }
 }
 
 #[derive(Eq, PartialEq)]
