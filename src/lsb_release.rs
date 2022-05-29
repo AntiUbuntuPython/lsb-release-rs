@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::str::FromStr;
 use fancy_regex::{Regex};
 use once_cell::sync::Lazy;
@@ -70,6 +70,10 @@ impl LSBInfo for LSBInfoGetter {
         #[allow(unused_variables)] let dpkg_query_result = Command::new("dpkg-query")
             .envs(vars())
             .args(dpkg_query_args)
+            // void dpkg-query error, such as "no such package"
+            .stderr(Stdio::null())
+            // don't inherit
+            .stdout(Stdio::piped())
             .spawn().ok()?
             .wait_with_output().ok()?;
 
@@ -126,6 +130,10 @@ impl LSBInfo for LSBInfoGetter {
         }
 
         let mut module_vec = modules.into_iter().collect::<Vec<_>>();
+        if module_vec.is_empty() {
+            return None
+        }
+
         module_vec.sort();
         Some(module_vec)
     }
