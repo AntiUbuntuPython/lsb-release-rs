@@ -1,4 +1,4 @@
-use crate::lsb_release::imp::dist::{DistroInfo, lsb_version};
+use crate::lsb_release::imp::dist::{lsb_version, DistroInfo};
 
 pub trait LSBInfo {
     fn id(&self) -> Option<String>;
@@ -21,15 +21,21 @@ impl LSBInfo for LSBInfoGetter {
     }
 
     fn description(&self) -> Option<String> {
-        DistroInfo::get_distro_information().ok().and_then(|a| a.description)
+        DistroInfo::get_distro_information()
+            .ok()
+            .and_then(|a| a.description)
     }
 
     fn release(&self) -> Option<String> {
-        DistroInfo::get_distro_information().ok().and_then(|a| a.release)
+        DistroInfo::get_distro_information()
+            .ok()
+            .and_then(|a| a.release)
     }
 
     fn codename(&self) -> Option<String> {
-        DistroInfo::get_distro_information().ok().and_then(|a| a.codename)
+        DistroInfo::get_distro_information()
+            .ok()
+            .and_then(|a| a.codename)
     }
 
     // this is check_modules_installed()

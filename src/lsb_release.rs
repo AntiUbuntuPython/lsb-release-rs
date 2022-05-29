@@ -1,2 +1,2 @@
-mod imp;
 pub mod get;
+mod imp;

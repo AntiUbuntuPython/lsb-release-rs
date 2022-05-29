@@ -1,4 +1,7 @@
-pub(in crate::lsb_release::imp) fn valid_lsb_versions<'v: 'r, 'r>(version: &'v str, module: &'r str) -> Vec<&'r str> {
+pub(in crate::lsb_release::imp) fn valid_lsb_versions<'v: 'r, 'r>(
+    version: &'v str,
+    module: &'r str,
+) -> Vec<&'r str> {
     match version {
         "3.0" => &["2.0", "3.0"] as &[&str],
         "3.1" => match module {
@@ -31,5 +34,5 @@ pub(in crate::lsb_release::imp) fn valid_lsb_versions<'v: 'r, 'r>(version: &'v s
         },
         _ => return vec![version],
     }
-        .to_vec()
+    .to_vec()
 }

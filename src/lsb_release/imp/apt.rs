@@ -1,3 +1,4 @@
+use fancy_regex::Regex;
 use std::env::var;
 use std::error::Error;
 use std::fs::File;
@@ -5,7 +6,6 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::Command;
 use std::str::FromStr;
-use fancy_regex::Regex;
 
 #[derive(Eq, PartialEq, Clone)]
 pub(in crate::lsb_release::imp) struct AptCachePolicyEntry {
@@ -60,22 +60,26 @@ impl FromStr for AptPolicy {
 pub(in crate::lsb_release::imp) fn dpkg_default_vendor() -> Result<Option<String>, Box<dyn Error>> {
     let f = File::open(dpkg_origin())?;
     let f = BufReader::new(f);
-    Ok(
-        f.lines().map(Result::unwrap)
-            .map(|line| line.splitn(2, ": ").map(std::string::ToString::to_string).collect::<Vec<_>>())
-            .map(|elements| (elements[0].clone(), elements[1].clone()))
-            .map(|(header, content)| (header.to_lowercase(), content.trim().to_string()))
-            .filter(|(header, _)| header == "vendor")
-            .last()
-            .map(|(_, content)| content)
-    )
+    Ok(f.lines()
+        .map(Result::unwrap)
+        .map(|line| {
+            line.splitn(2, ": ")
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .map(|elements| (elements[0].clone(), elements[1].clone()))
+        .map(|(header, content)| (header.to_lowercase(), content.trim().to_string()))
+        .filter(|(header, _)| header == "vendor")
+        .last()
+        .map(|(_, content)| content))
 }
 
 fn dpkg_origin() -> impl AsRef<Path> {
     var("LSB_ETC_DPKG_ORIGINS_DEFAULT").unwrap_or_else(|_| "/etc/dpkg/origins/default".to_string())
 }
 
-pub(in crate::lsb_release::imp) fn parse_apt_policy() -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
+pub(in crate::lsb_release::imp) fn parse_apt_policy(
+) -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
     let apt_cache_policy_output = Command::new("apt-cache")
         .arg("policy")
         // Command::new inherits env vars, so we need to just overwrite single variable
@@ -105,7 +109,7 @@ pub(in crate::lsb_release::imp) fn parse_apt_policy() -> Result<Vec<AptCachePoli
         .filter(|(_, bits)| bits.len() > 1)
         .map(|(priority, bits)| AptCachePolicyEntry {
             priority,
-            policy: bits[1].parse().unwrap()
+            policy: bits[1].parse().unwrap(),
         })
         .collect();
 

@@ -1,3 +1,8 @@
+use crate::lsb_release::imp::apt::{dpkg_default_vendor, parse_apt_policy, AptPolicy};
+use crate::lsb_release::imp::lsb::valid_lsb_versions;
+use fancy_regex::Regex;
+use once_cell::sync::Lazy;
+use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::env::var;
 use std::error::Error;
@@ -5,12 +10,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use fancy_regex::Regex;
-use once_cell::sync::Lazy;
-use serde::Deserialize;
 use voca_rs::Voca;
-use crate::lsb_release::imp::apt::{AptPolicy, dpkg_default_vendor, parse_apt_policy};
-use crate::lsb_release::imp::lsb::valid_lsb_versions;
 
 static MOD_NAME_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"lsb-(?P<module>[a-z\d]+)-(?P<arch>[^ ]+)(?: \(= (?P<version>[\d.]+)\))?"#)
@@ -30,8 +30,6 @@ struct DebianRelease {
     release: Option<String>,
     codename: Option<String>,
 }
-
-
 
 impl DistroInfo {
     const fn is_partial(&self) -> bool {
@@ -54,7 +52,6 @@ impl DistroInfo {
         }
     }
 
-
     // this is guess_debian_release()
     fn guess_debian_release() -> Result<Self, Box<dyn Error>> {
         let mut lsbinfo = Self {
@@ -66,7 +63,7 @@ impl DistroInfo {
         let x = DistroReleases::get_distro_info(lsbinfo.id.clone());
 
         #[allow(unused_variables)]
-            let os = match uname_rs::Uname::new()?.sysname.as_str() {
+        let os = match uname_rs::Uname::new()?.sysname.as_str() {
             #[allow(unused_variables)]
             x @ ("Linux" | "Hurd" | "NetBSD") => format!("GNU/{x}"),
             "FreeBSD" => "GNU/kFreeBSD".to_string(),
@@ -89,7 +86,7 @@ impl DistroInfo {
                 let release = rinfo.version.and_then(|release| {
                     let condition = rinfo.origin.unwrap() == *"Debian Ports"
                         && ["ftp.ports.debian.org", "ftp.debian-ports.org"]
-                        .contains(&rinfo.label.unwrap().as_str());
+                            .contains(&rinfo.label.unwrap().as_str());
 
                     if condition {
                         rinfo.suite = Some("unstable".to_string());
@@ -100,15 +97,14 @@ impl DistroInfo {
 
                 let codename = release.clone().map_or_else(
                     || {
-                        let release = rinfo.suite
-                            .unwrap_or_else(|| "unstable".to_string());
+                        let release = rinfo.suite.unwrap_or_else(|| "unstable".to_string());
                         if release == "testing" {
                             x.debian_testing_codename.clone()
                         } else {
                             Some("sid".to_string())
                         }
                     },
-                    |release| x.lookup_codename(release.as_str())
+                    |release| x.lookup_codename(release.as_str()),
                 );
 
                 lsbinfo.release = release;
@@ -221,8 +217,8 @@ impl DistroReleases {
                     "ftp.debian-ports.org".to_string(),
                 ],
             )]
-                .into_iter()
-                .collect()
+            .into_iter()
+            .collect()
         });
 
         let releases = releases.as_ref().ok()?;
@@ -232,27 +228,22 @@ impl DistroReleases {
         }
 
         let dim = {
-            let mut dim = releases.iter().filter(|release| {
-                let p_origin = release.policy.origin
-                    .clone()
-                    .unwrap_or_default();
-                let p_suite = release.policy.suite
-                    .clone()
-                    .unwrap_or_default();
-                let p_component = release.policy.component
-                    .clone()
-                    .unwrap_or_default();
-                let p_label = release.policy.label
-                    .clone()
-                    .unwrap_or_default();
+            let mut dim = releases
+                .iter()
+                .filter(|release| {
+                    let p_origin = release.policy.origin.clone().unwrap_or_default();
+                    let p_suite = release.policy.suite.clone().unwrap_or_default();
+                    let p_component = release.policy.component.clone().unwrap_or_default();
+                    let p_label = release.policy.label.clone().unwrap_or_default();
 
-                p_origin == origin
-                    && !ignore_suites.contains(&p_suite)
-                    && p_component == component
-                    && p_label == label
-                    || (alternate_olabels_ports.contains_key(&p_origin)
-                    && alternate_olabels_ports[&p_origin].contains(&label))
-            }).collect::<Vec<_>>();
+                    p_origin == origin
+                        && !ignore_suites.contains(&p_suite)
+                        && p_component == component
+                        && p_label == label
+                        || (alternate_olabels_ports.contains_key(&p_origin)
+                            && alternate_olabels_ports[&p_origin].contains(&label))
+                })
+                .collect::<Vec<_>>();
 
             if dim.is_empty() {
                 return None;
@@ -274,7 +265,9 @@ impl DistroReleases {
             policy.map_or(0, |suite| {
                 if self.release_order.contains(suite) {
                     // NOTE: do you think you can contain 2^63 elements in your memory?
-                    (self.release_order.len() - self.release_order.iter().position(|a| a == suite).unwrap()) as isize
+                    (self.release_order.len()
+                        - self.release_order.iter().position(|a| a == suite).unwrap())
+                        as isize
                 } else {
                     // FIXME: this is not correct in strict manner.
                     suite.parse::<f64>().unwrap_or(0.0) as isize
@@ -346,9 +339,7 @@ impl DistroReleases {
 
     fn get_debian_release(&self) -> Result<DebianRelease, Box<dyn Error>> {
         let path = PathGetter::debian_version();
-        let read_lines = &BufReader::new(
-            File::open(path)?,
-        )
+        let read_lines = &BufReader::new(File::open(path)?)
             .lines()
             .collect::<Vec<_>>();
 
@@ -361,7 +352,9 @@ impl DistroReleases {
         let mut y = DebianRelease::default();
 
         if !&release[0..=1]._is_alpha() {
-            let codename = self.lookup_codename(release).unwrap_or_else(|| "n/a".to_string());
+            let codename = self
+                .lookup_codename(release)
+                .unwrap_or_else(|| "n/a".to_string());
             y.codename = Some(codename);
             y.release = Some(release.to_string());
         } else if release.ends_with("/sid") {
@@ -420,7 +413,7 @@ pub(in crate::lsb_release) fn lsb_version() -> Option<Vec<String>> {
     dpkg_query_args.append(&mut packages);
 
     #[allow(unused_variables)]
-        let dpkg_query_result = Command::new("dpkg-query")
+    let dpkg_query_result = Command::new("dpkg-query")
         .args(dpkg_query_args)
         // void dpkg-query error, such as "no such package"
         .stderr(Stdio::null())
@@ -454,15 +447,13 @@ pub(in crate::lsb_release) fn lsb_version() -> Option<Vec<String>> {
             ['-', '+', '~']
                 .into_iter()
                 .find(|a| version.contains(*a))
-                .map_or(version, |s| {
-                    version.splitn(2, s).collect::<Vec<_>>()[0]
-                })
+                .map_or(version, |s| version.splitn(2, s).collect::<Vec<_>>()[0])
         };
 
         for pkg in provides.split(',') {
             let named_groups = match MOD_NAME_REGEX.captures(pkg).unwrap() {
                 None => continue,
-                Some(captures) => captures
+                Some(captures) => captures,
             };
 
             let module = &named_groups["module"];
@@ -471,14 +462,14 @@ pub(in crate::lsb_release) fn lsb_version() -> Option<Vec<String>> {
             let arch = &named_groups["arch"];
             if named_groups.name("version").is_some() {
                 #[allow(unused_variables)]
-                    let version = &named_groups["version"];
+                let version = &named_groups["version"];
                 let module = format!("{module}s-{version}s-{arch}s");
 
                 modules.insert(module);
             } else {
                 for v in valid_lsb_versions(version, module) {
                     #[allow(unused_variables)]
-                        let version = v;
+                    let version = v;
                     let module = format!("{module}s-{version}s-{arch}s");
 
                     modules.insert(module);

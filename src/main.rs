@@ -1,5 +1,11 @@
 #![deny(clippy::all, clippy::string_to_string)]
-#![warn(clippy::pedantic, clippy::nursery, clippy::restriction, clippy::cargo, clippy::get_unwrap)]
+#![warn(
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::restriction,
+    clippy::cargo,
+    clippy::get_unwrap
+)]
 #![allow(
     clippy::cargo_common_metadata,
     clippy::blanket_clippy_restriction_lints,
@@ -18,7 +24,7 @@
     clippy::shadow_unrelated,
     clippy::too_many_lines,
     clippy::cast_possible_truncation,
-    clippy::default_numeric_fallback,
+    clippy::default_numeric_fallback
 )]
 
 mod args;
