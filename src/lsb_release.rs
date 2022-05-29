@@ -98,7 +98,7 @@ impl LSBInfo for LSBInfoGetter {
             }
 
             let elements = line.splitn(2, ' ').collect::<Vec<_>>();
-            let (version, provides) = (elements.get(0).unwrap(), elements.get(1).unwrap());
+            let (version, provides) = (elements[0], elements[1]);
             // NOTE: `as_str` for arbitrary `for<'a> SplitN<'a, P: Pattern>` is unstable:
             //       it requires `str_split_as_str` as of 1.60.0
             let version = {
@@ -106,8 +106,8 @@ impl LSBInfo for LSBInfoGetter {
                 ['-', '+', '~']
                     .into_iter()
                     .find(|a| version.contains(*a))
-                    .map_or(*version, |s| {
-                        version.splitn(2, s).collect::<Vec<_>>().get(0).unwrap()
+                    .map_or(version, |s| {
+                        version.splitn(2, s).collect::<Vec<_>>()[0]
                     })
             };
 
@@ -234,7 +234,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
         let lines = f.lines().map(Result::unwrap).collect::<Vec<_>>();
         for line in lines {
             let elements = line.splitn(2, ": ").collect::<Vec<_>>();
-            let (header, content) = (elements.get(0).unwrap(), elements.get(1).unwrap());
+            let (header, content) = (elements[0], elements[1]);
             let header = header._lower_case();
             let content = content.trim();
             if header == "vendor" {
@@ -269,14 +269,11 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
         .lines()
         .collect::<Vec<_>>();
 
-        let release = read_lines.get(0).unwrap().as_ref();
+        let release = read_lines[0].as_ref();
 
         // borrow checkers :c
         let unknown = &"unknown".to_string();
-        let release = match release {
-            Ok(release) => release,
-            Err(_) => unknown,
-        };
+        let release = release.unwrap_or(unknown);
 
         if !&release[0..=1]._is_alpha() {
             let codename = lookup_codename(&x, release).unwrap_or_else(|| "n/a".to_string());
@@ -302,9 +299,9 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
                 let release = rinfo.0.get("version");
 
                 if let Some(release) = release {
-                    if rinfo.0.get("origin").unwrap() == &"Debian Ports".to_string()
+                    if rinfo.0["origin"] == *"Debian Ports"
                         && ["ftp.ports.debian.org", "ftp.debian-ports.org"]
-                            .contains(&rinfo.0.get("label").unwrap().as_str())
+                            .contains(&rinfo.0["label"].as_str())
                     {
                         rinfo.0.insert("suite".to_string(), "unstable".to_string());
                         None
@@ -381,50 +378,49 @@ fn guess_release_from_apt(
         return None;
     }
 
-    let mut dim = vec![];
-    for release in releases {
-        let policies = &release.policy.0;
-        let p_origin = policies
-            .get(&"policies".to_string())
-            .cloned()
-            .unwrap_or_default();
-        let p_suite = policies
-            .get(&"suite".to_string())
-            .cloned()
-            .unwrap_or_default();
-        let p_component = policies
-            .get(&"component".to_string())
-            .cloned()
-            .unwrap_or_default();
-        let p_label = policies
-            .get(&"label".to_string())
-            .cloned()
-            .unwrap_or_default();
+    let dim = {
+        let mut dim = vec![];
+        for release in releases {
+            let policies = &release.policy.0;
+            let p_origin = policies
+                .get(&"policies".to_string())
+                .cloned()
+                .unwrap_or_default();
+            let p_suite = policies
+                .get(&"suite".to_string())
+                .cloned()
+                .unwrap_or_default();
+            let p_component = policies
+                .get(&"component".to_string())
+                .cloned()
+                .unwrap_or_default();
+            let p_label = policies
+                .get(&"label".to_string())
+                .cloned()
+                .unwrap_or_default();
 
-        if p_origin == origin
-            && !ignore_suites.contains(&p_suite)
-            && p_component == component
-            && p_label == label
-            || (alternate_olabels_ports.contains_key(&p_origin)
-                && alternate_olabels_ports
-                    .get(&p_origin)
-                    .unwrap()
-                    .contains(&label))
-        {
-            dim.push(release);
+            if p_origin == origin
+                && !ignore_suites.contains(&p_suite)
+                && p_component == component
+                && p_label == label
+                || (alternate_olabels_ports.contains_key(&p_origin)
+                && alternate_olabels_ports[&p_origin].contains(&label))
+            {
+                dim.push(release);
+            }
         }
-    }
 
-    if dim.is_empty() {
-        return None;
-    }
+        if dim.is_empty() {
+            return None;
+        }
 
-    dim.sort_by_key(|a| a.priority);
-    dim.reverse();
+        dim.sort_by_key(|a| a.priority);
+        dim.reverse();
 
-    let dim = dim;
+        dim
+    };
 
-    let max_priority = dim.get(0).unwrap().priority;
+    let max_priority = dim[0].priority;
     let mut releases = dim
         .iter()
         .filter(|x| x.priority == max_priority)
@@ -434,10 +430,11 @@ fn guess_release_from_apt(
 
         policy.map_or(0, |suite| {
             if x.release_order.contains(suite) {
-                x.release_order.len() - x.release_order.iter().position(|a| a == suite).unwrap()
+                // NOTE: do you think you can contain 2^63 elements in your memory?
+                (x.release_order.len() - x.release_order.iter().position(|a| a == suite).unwrap()) as isize
             } else {
                 // FIXME: this is not correct in strict manner.
-                suite.parse::<f64>().unwrap_or(0.0) as usize
+                suite.parse::<f64>().unwrap_or(0.0) as isize
             }
         })
     });
@@ -476,7 +473,7 @@ fn parse_apt_policy() -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
             if bits.len() > 1 {
                 data.push(AptCachePolicyEntry {
                     priority,
-                    policy: bits.get(1).unwrap().parse::<AptPolicy>().unwrap(),
+                    policy: bits[1].parse::<AptPolicy>().unwrap(),
                 });
             }
         }
@@ -513,7 +510,7 @@ impl FromStr for AptPolicy {
         for bit in bits {
             let kv = bit.splitn(2, '=').collect::<Vec<_>>();
             if kv.len() > 1 {
-                let (k, v) = (kv.get(0).unwrap(), kv.get(1).copied().unwrap());
+                let (k, v) = (kv[0], kv.get(1).copied().unwrap());
                 if let Some(kl) = long_names.get(k) {
                     hash_map.insert(kl, v);
                 }
@@ -571,7 +568,7 @@ struct X {
 
 fn get_distro_info(origin: Option<String>) -> X {
     let origin = origin.unwrap_or_else(|| "Debian".to_string());
-    let csv_file = get_distro_csv(origin.clone());
+    let csv_file = get_distro_csv(origin.as_str());
 
     let mut codename_lookup = csv::Reader::from_path(csv_file)
         .unwrap()
@@ -591,7 +588,7 @@ fn get_distro_info(origin: Option<String>) -> X {
         .map(|a| a.series.clone())
         .collect::<Vec<_>>();
 
-    let debian_testing_codename = if origin.to_lowercase() == *"debian" {
+    let debian_testing_codename = (origin.to_lowercase() == *"debian").then(|| {
         release_order.append(&mut vec![
             "stable".to_string(),
             "proposed-updates".to_string(),
@@ -601,10 +598,8 @@ fn get_distro_info(origin: Option<String>) -> X {
             "sid".to_string(),
         ]);
 
-        Some("unknown.new.testing")
-    } else {
-        None
-    };
+        "unknown.new.testing"
+    });
 
     X {
         codename_lookup,
@@ -613,7 +608,7 @@ fn get_distro_info(origin: Option<String>) -> X {
     }
 }
 
-fn get_distro_csv(#[allow(unused_variables)] origin: String) -> impl AsRef<Path> {
+fn get_distro_csv(#[allow(unused_variables)] origin: &str) -> impl AsRef<Path> {
     let path = format!("/usr/share/distro-info/{origin}.csv");
     if Path::new(&path).exists() {
         path
@@ -645,7 +640,7 @@ fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>
                 }
 
                 let elements = line.splitn(2, '=').collect::<Vec<_>>();
-                let (var, arg) = (elements.get(0).unwrap(), elements.get(1).unwrap());
+                let (var, arg) = (elements[0], elements[1]);
                 let arg = if arg.starts_with('"') && arg.ends_with('"') {
                     &arg[1..arg.len() - 1]
                 } else {
@@ -656,7 +651,7 @@ fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>
                     continue;
                 }
 
-                match *var {
+                match var {
                     "VERSION_ID" => {
                         info.release = Some(arg.trim().to_string());
                     }
@@ -664,7 +659,7 @@ fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>
                         info.codename = Some(arg.trim().to_string());
                     }
                     "ID" => {
-                        info.id = Some(arg.trim()._title_case().to_string());
+                        info.id = Some(arg.trim()._title_case());
                     }
                     "PRETTY_NAME" => {
                         info.description = Some(arg.trim().to_string());

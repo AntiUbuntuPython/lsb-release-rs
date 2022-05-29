@@ -1,5 +1,25 @@
-#![deny(clippy::all)]
-#![warn(clippy::pedantic, clippy::nursery)]
+#![deny(clippy::all, clippy::string_to_string)]
+#![warn(clippy::pedantic, clippy::nursery, clippy::restriction, clippy::cargo, clippy::get_unwrap)]
+#![allow(
+    clippy::cargo_common_metadata,
+    clippy::blanket_clippy_restriction_lints,
+    clippy::missing_docs_in_private_items,
+    clippy::print_stderr,
+    clippy::print_stdout,
+    clippy::shadow_reuse,
+    clippy::implicit_return,
+    clippy::str_to_string,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::integer_arithmetic,
+    clippy::string_slice,
+    clippy::unwrap_in_result,
+    clippy::expect_used,
+    clippy::shadow_unrelated,
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::default_numeric_fallback,
+)]
 
 mod args;
 mod lsb_release;
