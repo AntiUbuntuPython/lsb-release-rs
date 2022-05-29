@@ -466,9 +466,9 @@ pub(in crate::lsb_release) fn lsb_version() -> Option<Vec<String>> {
             };
 
             let module = &named_groups["module"];
-            // false-positive
+            // false-positive on IDEA-side. see https://github.com/intellij-rust/intellij-rust/issues/8417
             #[allow(unused_variables)]
-                let arch = &named_groups["arch"];
+            let arch = &named_groups["arch"];
             if named_groups.name("version").is_some() {
                 #[allow(unused_variables)]
                     let version = &named_groups["version"];
