@@ -24,7 +24,7 @@ pub trait LSBInfo {
 
 struct LSBInfoGetter;
 
-static modnamare: Lazy<Regex> = Lazy::new(|| {
+static MOD_NAME_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"lsb-(?P<module>[a-z\d]+)-(?P<arch>[^ ]+)(?: \(= (?P<version>[\d.]+)\))?"#)
         .unwrap()
 });
@@ -111,7 +111,7 @@ impl LSBInfo for LSBInfoGetter {
             };
 
             for pkg in provides.split(',') {
-                let named_groups = match modnamare.captures(pkg).unwrap() {
+                let named_groups = match MOD_NAME_REGEX.captures(pkg).unwrap() {
                     None => continue,
                     Some(captures) => captures
                 };
