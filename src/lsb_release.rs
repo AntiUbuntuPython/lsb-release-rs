@@ -1,4 +1,4 @@
-use fancy_regex::Regex;
+use fancy_regex::{Captures, Regex};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::env::{var, vars};
@@ -72,7 +72,6 @@ impl LSBInfo for LSBInfoGetter {
 
         #[allow(unused_variables)]
         let dpkg_query_result = Command::new("dpkg-query")
-            .envs(vars())
             .args(dpkg_query_args)
             // void dpkg-query error, such as "no such package"
             .stderr(Stdio::null())
@@ -112,21 +111,18 @@ impl LSBInfo for LSBInfoGetter {
             };
 
             for pkg in provides.split(',') {
-                let mob = modnamare.captures(pkg).unwrap();
-                // no match
-                if mob.is_none() {
-                    continue;
-                }
+                let named_groups = match modnamare.captures(pkg).unwrap() {
+                    None => continue,
+                    Some(captures) => captures
+                };
 
-                let named_groups = mob.unwrap();
-
-                let module = named_groups.name("module").unwrap().as_str();
+                let module = &named_groups["module"];
                 // false-positive
                 #[allow(unused_variables)]
-                let arch = named_groups.name("arch").unwrap().as_str();
+                let arch = &named_groups["arch"];
                 if named_groups.name("version").is_some() {
                     #[allow(unused_variables)]
-                    let version = named_groups.name("version").unwrap().as_str();
+                    let version = &named_groups["version"];
                     let module = format!("{module}s-{version}s-{arch}s");
 
                     modules.insert(module);
@@ -143,12 +139,10 @@ impl LSBInfo for LSBInfoGetter {
         }
 
         let mut module_vec = modules.into_iter().collect::<Vec<_>>();
-        if module_vec.is_empty() {
-            return None;
-        }
-
-        module_vec.sort();
-        Some(module_vec)
+        (!module_vec.is_empty()).then(|| {
+            module_vec.sort();
+            module_vec
+        })
     }
 }
 
@@ -282,11 +276,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
         } else if release.ends_with("/sid") {
             let strip = release.strip_suffix("/sid").unwrap();
             let strip2 = strip.to_lowercase();
-            if strip2 == "testing" {
-                None
-            } else {
-                Some(strip.to_string())
-            }
+            (strip2 != "testing").then(|| strip.to_string())
         } else {
             Some(release.to_string())
         }
@@ -295,13 +285,13 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
     if lsbinfo.codename.is_none() {
         let rinfo = guess_release_from_apt(None, None, None, None, None, &x);
         if let Some(mut rinfo) = rinfo {
-            let release = rinfo.0.get("version").cloned().and_then(|release| {
-                let condition = rinfo.0["origin"] == *"Debian Ports"
+            let release = rinfo.version.and_then(|release| {
+                let condition = rinfo.origin.unwrap() == *"Debian Ports"
                     && ["ftp.ports.debian.org", "ftp.debian-ports.org"]
-                    .contains(&rinfo.0["label"].as_str());
+                    .contains(&rinfo.label.unwrap().as_str());
 
                 if condition {
-                    rinfo.0.insert("suite".to_string(), "unstable".to_string());
+                    rinfo.suite = Some("unstable".to_string());
                 }
 
                 (!condition).then(|| release)
@@ -309,10 +299,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
 
             let codename = release.clone().map_or_else(
                 || {
-                    let release = rinfo
-                        .0
-                        .get("suite")
-                        .cloned()
+                    let release = rinfo.suite
                         .unwrap_or_else(|| "unstable".to_string());
                     if release == "testing" {
                         x.debian_testing_codename.clone()
@@ -364,53 +351,40 @@ fn guess_release_from_apt(
         .collect()
     });
 
-    if releases.as_ref().err().is_some() {
-        return None;
-    }
+    let releases = releases.as_ref().ok()?;
 
-    let releases = releases.ok().unwrap();
     if releases.is_empty() {
         return None;
     }
 
     let dim = {
-        let mut dim = vec![];
-        for release in releases {
-            let policies = &release.policy.0;
-            let p_origin = policies
-                .get(&"policies".to_string())
-                .cloned()
+        let mut dim = releases.into_iter().filter(|release| {
+            let p_origin = release.policy.origin
+                .clone()
                 .unwrap_or_default();
-            let p_suite = policies
-                .get(&"suite".to_string())
-                .cloned()
+            let p_suite = release.policy.suite
+                .clone()
                 .unwrap_or_default();
-            let p_component = policies
-                .get(&"component".to_string())
-                .cloned()
+            let p_component = release.policy.component
+                .clone()
                 .unwrap_or_default();
-            let p_label = policies
-                .get(&"label".to_string())
-                .cloned()
+            let p_label = release.policy.label
+                .clone()
                 .unwrap_or_default();
 
-            if p_origin == origin
+            p_origin == origin
                 && !ignore_suites.contains(&p_suite)
                 && p_component == component
                 && p_label == label
                 || (alternate_olabels_ports.contains_key(&p_origin)
                 && alternate_olabels_ports[&p_origin].contains(&label))
-            {
-                dim.push(release);
-            }
-        }
+        }).collect::<Vec<_>>();
 
         if dim.is_empty() {
             return None;
         }
 
-        dim.sort_by_key(|a| a.priority);
-        dim.reverse();
+        dim.sort_by_key(|a| std::cmp::Reverse(a.priority));
 
         dim
     };
@@ -421,7 +395,7 @@ fn guess_release_from_apt(
         .filter(|x| x.priority == max_priority)
         .collect::<Vec<_>>();
     releases.sort_by_key(|a| {
-        let policy = a.policy.0.get(&*"suite".to_string());
+        let policy = a.policy.suite.as_ref();
 
         policy.map_or(0, |suite| {
             if x.release_order.contains(suite) {
@@ -434,16 +408,14 @@ fn guess_release_from_apt(
         })
     });
 
-    Some(releases.get(0).copied().unwrap().clone().policy)
+    Some(releases[0].policy.clone())
 }
 
 fn parse_apt_policy() -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
-    let mut data = vec![];
     let apt_cache_policy_output = Command::new("apt-cache")
         .arg("policy")
-        .envs(vars().collect::<HashMap<_, _>>().tap_mut(|h| {
-            h.insert("LC_ALL".to_string(), "C.UTF-8".to_string());
-        }))
+        // Command::new inherits env vars, so we need to just overwrite single variable
+        .env("LC_ALL", "C.UTF-8")
         .spawn()?
         .wait_with_output()?;
 
@@ -451,27 +423,27 @@ fn parse_apt_policy() -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
 
     let regex = Regex::new(r#"(-?\d+)"#).unwrap();
 
-    for line in String::from_utf8(apt_cache_policy_output.stdout)
+    let data = String::from_utf8(apt_cache_policy_output.stdout)
         .expect("This byte sequence is not valid UTF-8")
         .lines()
-    {
-        let line = line.trim();
-
-        if line.starts_with("release") {
+        .map(str::trim)
+        .filter(|line| line.starts_with("release"))
+        .map(|line| {
             let priority = regex
                 .captures(line)
                 .unwrap()
                 .map(|c| c[1].parse().unwrap())
                 .unwrap();
             let bits = line.splitn(2, ' ').collect::<Vec<_>>();
-            if bits.len() > 1 {
-                data.push(AptCachePolicyEntry {
-                    priority,
-                    policy: bits[1].parse().unwrap(),
-                });
-            }
-        }
-    }
+
+            (priority, bits)
+        })
+        .filter(|(_, bits)| bits.len() > 1)
+        .map(|(priority, bits)| AptCachePolicyEntry {
+            priority,
+            policy: bits[1].parse().unwrap()
+        })
+        .collect();
 
     Ok(data)
 }
@@ -482,41 +454,47 @@ struct AptCachePolicyEntry {
     policy: AptPolicy,
 }
 
-#[derive(Eq, PartialEq, Clone)]
-struct AptPolicy(HashMap<String, String>);
+#[derive(Eq, PartialEq, Clone, Default)]
+struct AptPolicy {
+    version: Option<String>,
+    origin: Option<String>,
+    suite: Option<String>,
+    component: Option<String>,
+    label: Option<String>,
+}
 
 impl FromStr for AptPolicy {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let long_names = [
-            ("v", "version"),
-            ("o", "origin"),
-            ("a", "suite"),
-            ("c", "component"),
-            ("l", "label"),
-        ]
-        .into_iter()
-        .collect::<HashMap<_, _>>();
+        let mut ret = Self::default();
 
-        let bits = s.split(',').collect::<Vec<_>>();
-        let mut hash_map = HashMap::with_capacity(bits.len());
-        for bit in bits {
+        for bit in s.split(',') {
             let kv = bit.splitn(2, '=').collect::<Vec<_>>();
             if kv.len() > 1 {
-                let (k, v) = (kv[0], kv.get(1).copied().unwrap());
-                if let Some(kl) = long_names.get(k) {
-                    hash_map.insert(*kl, v);
+                let (k, v) = (kv[0], kv[1]);
+                match k {
+                    "v" => {
+                        ret.version = Some(v.to_string());
+                    }
+                    "o" => {
+                        ret.origin = Some(v.to_string());
+                    }
+                    "a" => {
+                        ret.suite = Some(v.to_string());
+                    }
+                    "c" => {
+                        ret.component = Some(v.to_string());
+                    }
+                    "l" => {
+                        ret.label = Some(v.to_string());
+                    }
+                    _ => {}
                 }
             }
         }
 
-        Ok(Self(
-            hash_map
-                .into_iter()
-                .map(|(k, v)| ((*k).to_string(), v.to_string()))
-                .collect(),
-        ))
+        Ok(ret)
     }
 }
 
@@ -618,10 +596,11 @@ fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>
     File::open(path)
         .map(|read| {
             let read = BufReader::new(read);
-            let unwraped = read.lines().map(Result::unwrap).collect::<Vec<_>>();
+            let unwraped = read.lines();
             let mut info = DistroInfo::default();
             for line4 in unwraped {
-                let line = line4.as_str().trim();
+                let line23 = line4.unwrap();
+                let line = line23.as_str().trim();
                 if line.is_empty() {
                     continue;
                 }
