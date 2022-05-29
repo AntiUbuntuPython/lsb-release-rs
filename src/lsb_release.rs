@@ -32,117 +32,24 @@ static MOD_NAME_REGEX: Lazy<Regex> = Lazy::new(|| {
 // replacement for /usr/share/pyshared/lsb_release.py
 impl LSBInfo for LSBInfoGetter {
     fn id(&self) -> Option<String> {
-        get_distro_information().ok().and_then(|a| a.id)
+        DistroInfo::get_distro_information().ok().and_then(|a| a.id)
     }
 
     fn description(&self) -> Option<String> {
-        get_distro_information().ok().and_then(|a| a.description)
+        DistroInfo::get_distro_information().ok().and_then(|a| a.description)
     }
 
     fn release(&self) -> Option<String> {
-        get_distro_information().ok().and_then(|a| a.release)
+        DistroInfo::get_distro_information().ok().and_then(|a| a.release)
     }
 
     fn codename(&self) -> Option<String> {
-        get_distro_information().ok().and_then(|a| a.codename)
+        DistroInfo::get_distro_information().ok().and_then(|a| a.codename)
     }
 
     // this is check_modules_installed()
     fn lsb_version(&self) -> Option<Vec<String>> {
-        let mut dpkg_query_args = vec![
-            "-f".to_string(),
-            // NOTE: this is dpkg-query formatter, no need to interpolate
-            format!("${{Version}} ${{Provides}}\n"),
-            "-W".to_string(),
-        ];
-
-        // NOTE: this list may grow eventually!
-        let mut packages = vec![
-            "lsb-core".to_string(),
-            "lsb-cxx".to_string(),
-            "lsb-graphics".to_string(),
-            "lsb-desktop".to_string(),
-            "lsb-languages".to_string(),
-            "lsb-multimedia".to_string(),
-            "lsb-printing".to_string(),
-            "lsb-security".to_string(),
-        ];
-
-        dpkg_query_args.append(&mut packages);
-
-        #[allow(unused_variables)]
-        let dpkg_query_result = Command::new("dpkg-query")
-            .args(dpkg_query_args)
-            // void dpkg-query error, such as "no such package"
-            .stderr(Stdio::null())
-            // don't inherit
-            .stdout(Stdio::piped())
-            .spawn()
-            .ok()?
-            .wait_with_output()
-            .ok()?;
-
-        let query_result_lines = dpkg_query_result.stdout;
-        if query_result_lines.is_empty() {
-            return None;
-        }
-
-        let mut modules = HashSet::new();
-        for line in String::from_utf8(query_result_lines)
-            .expect("It's not valid UTF-8")
-            .lines()
-        {
-            if line.is_empty() {
-                continue;
-            }
-
-            let elements = line.splitn(2, ' ').collect::<Vec<_>>();
-            let (version, provides) = (elements[0], elements[1]);
-            // NOTE: `as_str` for arbitrary `for<'a> SplitN<'a, P: Pattern>` is unstable:
-            //       it requires `str_split_as_str` as of 1.60.0
-            let version = {
-                // Debian revision splitter is one of them
-                ['-', '+', '~']
-                    .into_iter()
-                    .find(|a| version.contains(*a))
-                    .map_or(version, |s| {
-                        version.splitn(2, s).collect::<Vec<_>>()[0]
-                    })
-            };
-
-            for pkg in provides.split(',') {
-                let named_groups = match MOD_NAME_REGEX.captures(pkg).unwrap() {
-                    None => continue,
-                    Some(captures) => captures
-                };
-
-                let module = &named_groups["module"];
-                // false-positive
-                #[allow(unused_variables)]
-                let arch = &named_groups["arch"];
-                if named_groups.name("version").is_some() {
-                    #[allow(unused_variables)]
-                    let version = &named_groups["version"];
-                    let module = format!("{module}s-{version}s-{arch}s");
-
-                    modules.insert(module);
-                } else {
-                    for v in valid_lsb_versions(version, module) {
-                        #[allow(unused_variables)]
-                        let version = v;
-                        let module = format!("{module}s-{version}s-{arch}s");
-
-                        modules.insert(module);
-                    }
-                }
-            }
-        }
-
-        let mut module_vec = modules.into_iter().collect::<Vec<_>>();
-        (!module_vec.is_empty()).then(|| {
-            module_vec.sort();
-            module_vec
-        })
+        FFI::lsb_version()
     }
 }
 
@@ -325,6 +232,68 @@ impl DistroInfo {
 
         Ok(lsbinfo)
     }
+
+    // this is get_os_release()
+    fn get_partial_info(path: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
+        File::open(path)
+            .map(|read| {
+                let read = BufReader::new(read);
+                let unwraped = read.lines();
+                let mut info = DistroInfo::default();
+                for line4 in unwraped {
+                    let line23 = line4.unwrap();
+                    let line = line23.as_str().trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    if !line.contains('=') {
+                        continue;
+                    }
+
+                    let elements = line.splitn(2, '=').collect::<Vec<_>>();
+                    let (var, arg) = (elements[0], elements[1]);
+                    let arg = if arg.starts_with('"') && arg.ends_with('"') {
+                        &arg[1..arg.len() - 1]
+                    } else {
+                        arg
+                    };
+
+                    if arg.is_empty() {
+                        continue;
+                    }
+
+                    match var {
+                        "VERSION_ID" => {
+                            info.release = Some(arg.trim().to_string());
+                        }
+                        "VERSION_CODENAME" => {
+                            info.codename = Some(arg.trim().to_string());
+                        }
+                        "ID" => {
+                            info.id = Some(arg.trim()._title_case());
+                        }
+                        "PRETTY_NAME" => {
+                            info.description = Some(arg.trim().to_string());
+                        }
+
+                        _ => {}
+                    }
+                }
+                info
+            })
+            .map_err(|e| Box::new(e) as Box<dyn Error>)
+    }
+
+    fn get_distro_information() -> Result<Self, Box<dyn Error>> {
+        let lsbinfo = Self::get_partial_info(PathGetter::lsb_os_release())?;
+        if lsbinfo.is_partial() {
+            let lsbinfo = lsbinfo.merged(&Self::guess_debian_release()?);
+            return Ok(lsbinfo);
+        }
+
+        Ok(lsbinfo)
+    }
 }
 
 #[derive(Eq, PartialEq)]
@@ -343,7 +312,7 @@ impl X {
         label: Option<String>,
         alternate_ports: Option<HashMap<String, Vec<String>>>,
     ) -> Option<AptPolicy> {
-        let releases = parse_apt_policy();
+        let releases = FFI::parse_apt_policy();
         let origin = origin.unwrap_or_else(|| "Debian".to_string());
         let component = component.unwrap_or_else(|| "main".to_string());
         let ignore_suites = ignore_suites.unwrap_or_else(|| vec!["experimental".to_string()]);
@@ -480,41 +449,143 @@ impl X {
     }
 }
 
-fn parse_apt_policy() -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
-    let apt_cache_policy_output = Command::new("apt-cache")
-        .arg("policy")
-        // Command::new inherits env vars, so we need to just overwrite single variable
-        .env("LC_ALL", "C.UTF-8")
-        .spawn()?
-        .wait_with_output()?;
+#[allow(clippy::upper_case_acronyms)]
+struct FFI;
 
-    // SAFETY: this shall be UTF-8
+impl FFI {
+    fn parse_apt_policy() -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
+        let apt_cache_policy_output = Command::new("apt-cache")
+            .arg("policy")
+            // Command::new inherits env vars, so we need to just overwrite single variable
+            .env("LC_ALL", "C.UTF-8")
+            .spawn()?
+            .wait_with_output()?;
 
-    let regex = Regex::new(r#"(-?\d+)"#).unwrap();
+        // SAFETY: this shall be UTF-8
 
-    let data = String::from_utf8(apt_cache_policy_output.stdout)
-        .expect("This byte sequence is not valid UTF-8")
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with("release"))
-        .map(|line| {
-            let priority = regex
-                .captures(line)
-                .unwrap()
-                .map(|c| c[1].parse().unwrap())
-                .unwrap();
-            let bits = line.splitn(2, ' ').collect::<Vec<_>>();
+        let regex = Regex::new(r#"(-?\d+)"#).unwrap();
 
-            (priority, bits)
+        let data = String::from_utf8(apt_cache_policy_output.stdout)
+            .expect("This byte sequence is not valid UTF-8")
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("release"))
+            .map(|line| {
+                let priority = regex
+                    .captures(line)
+                    .unwrap()
+                    .map(|c| c[1].parse().unwrap())
+                    .unwrap();
+                let bits = line.splitn(2, ' ').collect::<Vec<_>>();
+
+                (priority, bits)
+            })
+            .filter(|(_, bits)| bits.len() > 1)
+            .map(|(priority, bits)| AptCachePolicyEntry {
+                priority,
+                policy: bits[1].parse().unwrap()
+            })
+            .collect();
+
+        Ok(data)
+    }
+
+    fn lsb_version() -> Option<Vec<String>> {
+        let mut dpkg_query_args = vec![
+            "-f".to_string(),
+            // NOTE: this is dpkg-query formatter, no need to interpolate
+            format!("${{Version}} ${{Provides}}\n"),
+            "-W".to_string(),
+        ];
+
+        // NOTE: this list may grow eventually!
+        let mut packages = vec![
+            "lsb-core".to_string(),
+            "lsb-cxx".to_string(),
+            "lsb-graphics".to_string(),
+            "lsb-desktop".to_string(),
+            "lsb-languages".to_string(),
+            "lsb-multimedia".to_string(),
+            "lsb-printing".to_string(),
+            "lsb-security".to_string(),
+        ];
+
+        dpkg_query_args.append(&mut packages);
+
+        #[allow(unused_variables)]
+            let dpkg_query_result = Command::new("dpkg-query")
+            .args(dpkg_query_args)
+            // void dpkg-query error, such as "no such package"
+            .stderr(Stdio::null())
+            // don't inherit
+            .stdout(Stdio::piped())
+            .spawn()
+            .ok()?
+            .wait_with_output()
+            .ok()?;
+
+        let query_result_lines = dpkg_query_result.stdout;
+        if query_result_lines.is_empty() {
+            return None;
+        }
+
+        let mut modules = HashSet::new();
+        for line in String::from_utf8(query_result_lines)
+            .expect("It's not valid UTF-8")
+            .lines()
+        {
+            if line.is_empty() {
+                continue;
+            }
+
+            let elements = line.splitn(2, ' ').collect::<Vec<_>>();
+            let (version, provides) = (elements[0], elements[1]);
+            // NOTE: `as_str` for arbitrary `for<'a> SplitN<'a, P: Pattern>` is unstable:
+            //       it requires `str_split_as_str` as of 1.60.0
+            let version = {
+                // Debian revision splitter is one of them
+                ['-', '+', '~']
+                    .into_iter()
+                    .find(|a| version.contains(*a))
+                    .map_or(version, |s| {
+                        version.splitn(2, s).collect::<Vec<_>>()[0]
+                    })
+            };
+
+            for pkg in provides.split(',') {
+                let named_groups = match MOD_NAME_REGEX.captures(pkg).unwrap() {
+                    None => continue,
+                    Some(captures) => captures
+                };
+
+                let module = &named_groups["module"];
+                // false-positive
+                #[allow(unused_variables)]
+                    let arch = &named_groups["arch"];
+                if named_groups.name("version").is_some() {
+                    #[allow(unused_variables)]
+                        let version = &named_groups["version"];
+                    let module = format!("{module}s-{version}s-{arch}s");
+
+                    modules.insert(module);
+                } else {
+                    for v in valid_lsb_versions(version, module) {
+                        #[allow(unused_variables)]
+                            let version = v;
+                        let module = format!("{module}s-{version}s-{arch}s");
+
+                        modules.insert(module);
+                    }
+                }
+            }
+        }
+
+        let mut module_vec = modules.into_iter().collect::<Vec<_>>();
+        (!module_vec.is_empty()).then(|| {
+            module_vec.sort();
+            module_vec
         })
-        .filter(|(_, bits)| bits.len() > 1)
-        .map(|(priority, bits)| AptCachePolicyEntry {
-            priority,
-            policy: bits[1].parse().unwrap()
-        })
-        .collect();
-
-    Ok(data)
+    }
 }
 
 #[derive(Eq, PartialEq, Clone)]
@@ -573,68 +644,6 @@ use serde::Deserialize;
 struct DistroInfoCsvRecord {
     version: String,
     series: String,
-}
-
-// this is get_os_release()
-fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>> {
-    File::open(path)
-        .map(|read| {
-            let read = BufReader::new(read);
-            let unwraped = read.lines();
-            let mut info = DistroInfo::default();
-            for line4 in unwraped {
-                let line23 = line4.unwrap();
-                let line = line23.as_str().trim();
-                if line.is_empty() {
-                    continue;
-                }
-
-                if !line.contains('=') {
-                    continue;
-                }
-
-                let elements = line.splitn(2, '=').collect::<Vec<_>>();
-                let (var, arg) = (elements[0], elements[1]);
-                let arg = if arg.starts_with('"') && arg.ends_with('"') {
-                    &arg[1..arg.len() - 1]
-                } else {
-                    arg
-                };
-
-                if arg.is_empty() {
-                    continue;
-                }
-
-                match var {
-                    "VERSION_ID" => {
-                        info.release = Some(arg.trim().to_string());
-                    }
-                    "VERSION_CODENAME" => {
-                        info.codename = Some(arg.trim().to_string());
-                    }
-                    "ID" => {
-                        info.id = Some(arg.trim()._title_case());
-                    }
-                    "PRETTY_NAME" => {
-                        info.description = Some(arg.trim().to_string());
-                    }
-
-                    _ => {}
-                }
-            }
-            info
-        })
-        .map_err(|e| Box::new(e) as Box<dyn Error>)
-}
-
-fn get_distro_information() -> Result<DistroInfo, Box<dyn Error>> {
-    let lsbinfo = get_partial_info(PathGetter::lsb_os_release())?;
-    if lsbinfo.is_partial() {
-        let lsbinfo = lsbinfo.merged(&guess_debian_release()?);
-        return Ok(lsbinfo);
-    }
-
-    Ok(lsbinfo)
 }
 
 pub fn grub_info() -> impl LSBInfo {
