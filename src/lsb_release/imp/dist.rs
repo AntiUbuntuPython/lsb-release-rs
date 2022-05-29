@@ -26,40 +26,12 @@ pub(in crate::lsb_release) struct DistroInfo {
 }
 
 #[derive(Default, Eq, PartialEq, Debug)]
-struct Y {
+struct DebianRelease {
     release: Option<String>,
     codename: Option<String>,
 }
 
-fn get_debian_release(x: &X) -> Result<Y, Box<dyn Error>> {
-    let path = PathGetter::debian_version();
-    let read_lines = &BufReader::new(
-        File::open(path)?,
-    )
-        .lines()
-        .collect::<Vec<_>>();
 
-    let release = read_lines[0].as_ref();
-
-    // borrow checkers :c
-    let unknown = &"unknown".to_string();
-    let release = release.unwrap_or(unknown);
-
-    let mut y = Y::default();
-
-    if !&release[0..=1]._is_alpha() {
-        let codename = x.lookup_codename(release).unwrap_or_else(|| "n/a".to_string());
-        y.codename = Some(codename);
-        y.release = Some(release.to_string());
-    } else if release.ends_with("/sid") {
-        let strip = release.strip_suffix("/sid").unwrap();
-        y.release = (strip.to_lowercase() != "testing").then(|| strip.to_string())
-    } else {
-        y.release = Some(release.to_string())
-    };
-
-    Ok(y)
-}
 
 impl DistroInfo {
     const fn is_partial(&self) -> bool {
@@ -91,7 +63,7 @@ impl DistroInfo {
         };
         lsbinfo.id = dpkg_default_vendor().ok().flatten();
 
-        let x = X::get_distro_info(lsbinfo.id.clone());
+        let x = DistroReleases::get_distro_info(lsbinfo.id.clone());
 
         #[allow(unused_variables)]
             let os = match uname_rs::Uname::new()?.sysname.as_str() {
@@ -106,7 +78,8 @@ impl DistroInfo {
             "{id}s {os}s",
             id = lsbinfo.id.clone().unwrap_or_default()
         ));
-        let y = get_debian_release(&x)?;
+
+        let y = x.get_debian_release()?;
         lsbinfo.release = y.release;
         lsbinfo.codename = y.codename;
 
@@ -156,54 +129,56 @@ impl DistroInfo {
 
     // this is get_os_release()
     fn get_partial_info(path: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
-        File::open(path)
-            .map(|read| {
-                let read = BufReader::new(read);
-                let unwraped = read.lines();
-                let mut info = DistroInfo::default();
-                for line4 in unwraped {
-                    let line23 = line4.unwrap();
-                    let line = line23.as_str().trim();
-                    if line.is_empty() {
-                        continue;
-                    }
+        let read = File::open(path)?;
+        let read = BufReader::new(read);
+        let mut info = Self::default();
+        for line4 in read.lines() {
+            // borrow checker :c
+            let q = line4.unwrap();
+            let line = q.as_str().trim();
+            if line.is_empty() {
+                continue;
+            }
 
-                    if !line.contains('=') {
-                        continue;
-                    }
+            if !line.contains('=') {
+                continue;
+            }
 
-                    let elements = line.splitn(2, '=').collect::<Vec<_>>();
-                    let (var, arg) = (elements[0], elements[1]);
-                    let arg = if arg.starts_with('"') && arg.ends_with('"') {
-                        &arg[1..arg.len() - 1]
-                    } else {
-                        arg
-                    };
-
-                    if arg.is_empty() {
-                        continue;
-                    }
-
-                    match var {
-                        "VERSION_ID" => {
-                            info.release = Some(arg.trim().to_string());
-                        }
-                        "VERSION_CODENAME" => {
-                            info.codename = Some(arg.trim().to_string());
-                        }
-                        "ID" => {
-                            info.id = Some(arg.trim()._title_case());
-                        }
-                        "PRETTY_NAME" => {
-                            info.description = Some(arg.trim().to_string());
-                        }
-
-                        _ => {}
-                    }
+            let elements = line.splitn(2, '=').collect::<Vec<_>>();
+            let (var, arg) = (elements[0], elements[1]);
+            // SAFETY: (forall 'a) ^ (a: &'a str) ^ (b: &'a str) ^ a.starts_with(b)
+            //   supports a.strip_prefix(b).unwrap() safety.
+            //   ends_with and strip_suffix as well.
+            let arg = {
+                if arg.starts_with('"') && arg.ends_with('"') {
+                    arg.strip_suffix('"').unwrap().strip_prefix('"').unwrap()
+                } else {
+                    arg
                 }
-                info
-            })
-            .map_err(|e| Box::new(e) as Box<dyn Error>)
+            };
+
+            if arg.is_empty() {
+                continue;
+            }
+
+            match var {
+                "VERSION_ID" => {
+                    info.release = Some(arg.trim().to_string());
+                }
+                "VERSION_CODENAME" => {
+                    info.codename = Some(arg.trim().to_string());
+                }
+                "ID" => {
+                    info.id = Some(arg.trim()._title_case());
+                }
+                "PRETTY_NAME" => {
+                    info.description = Some(arg.trim().to_string());
+                }
+
+                _ => {}
+            }
+        }
+        Ok(info)
     }
 
     pub(in crate::lsb_release) fn get_distro_information() -> Result<Self, Box<dyn Error>> {
@@ -218,13 +193,13 @@ impl DistroInfo {
 }
 
 #[derive(Eq, PartialEq)]
-struct X {
+struct DistroReleases {
     codename_lookup: Vec<DistroInfoCsvRecord>,
     release_order: Vec<String>,
     debian_testing_codename: Option<String>,
 }
 
-impl X {
+impl DistroReleases {
     fn guess_release_from_apt(
         &self,
         origin: Option<String>,
@@ -367,6 +342,36 @@ impl X {
             release_order,
             debian_testing_codename: debian_testing_codename.map(std::string::ToString::to_string),
         }
+    }
+
+    fn get_debian_release(&self) -> Result<DebianRelease, Box<dyn Error>> {
+        let path = PathGetter::debian_version();
+        let read_lines = &BufReader::new(
+            File::open(path)?,
+        )
+            .lines()
+            .collect::<Vec<_>>();
+
+        let release = read_lines[0].as_ref();
+
+        // borrow checkers :c
+        let unknown = &"unknown".to_string();
+        let release = release.unwrap_or(unknown);
+
+        let mut y = DebianRelease::default();
+
+        if !&release[0..=1]._is_alpha() {
+            let codename = self.lookup_codename(release).unwrap_or_else(|| "n/a".to_string());
+            y.codename = Some(codename);
+            y.release = Some(release.to_string());
+        } else if release.ends_with("/sid") {
+            let strip = release.strip_suffix("/sid").unwrap();
+            y.release = (strip.to_lowercase() != "testing").then(|| strip.to_string());
+        } else {
+            y.release = Some(release.to_string());
+        };
+
+        Ok(y)
     }
 }
 
