@@ -231,7 +231,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
             .map_err(|e| eprintln!("Unable to open dpkg_origin: {e}"))
             .unwrap();
         let f = BufReader::new(f);
-        let lines = f.lines().map(Result::unwrap).collect::<Vec<_>>();
+        let lines = f.lines().map(Result::unwrap);
         for line in lines {
             let elements = line.splitn(2, ": ").collect::<Vec<_>>();
             let (header, content) = (elements[0], elements[1]);
@@ -295,40 +295,35 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
     if lsbinfo.codename.is_none() {
         let rinfo = guess_release_from_apt(None, None, None, None, None, &x);
         if let Some(mut rinfo) = rinfo {
-            let release = {
-                let release = rinfo.0.get("version");
+            let release = rinfo.0.get("version").cloned().and_then(|release| {
+                let condition = rinfo.0["origin"] == *"Debian Ports"
+                    && ["ftp.ports.debian.org", "ftp.debian-ports.org"]
+                    .contains(&rinfo.0["label"].as_str());
 
-                if let Some(release) = release {
-                    if rinfo.0["origin"] == *"Debian Ports"
-                        && ["ftp.ports.debian.org", "ftp.debian-ports.org"]
-                            .contains(&rinfo.0["label"].as_str())
-                    {
-                        rinfo.0.insert("suite".to_string(), "unstable".to_string());
-                        None
+                if condition {
+                    rinfo.0.insert("suite".to_string(), "unstable".to_string());
+                }
+
+                (!condition).then(|| release)
+            });
+
+            let codename = release.clone().map_or_else(
+                || {
+                    let release = rinfo
+                        .0
+                        .get("suite")
+                        .cloned()
+                        .unwrap_or_else(|| "unstable".to_string());
+                    if release == "testing" {
+                        x.debian_testing_codename.clone()
                     } else {
-                        Some(release)
+                        Some("sid".to_string())
                     }
-                } else {
-                    release
-                }
-            };
+                },
+                |release| lookup_codename(&x, release.as_str())
+            );
 
-            let codename = if let Some(release) = release {
-                lookup_codename(&x, release)
-            } else {
-                let release = rinfo
-                    .0
-                    .get("suite")
-                    .cloned()
-                    .unwrap_or_else(|| "unstable".to_string());
-                if release == "testing" {
-                    x.debian_testing_codename
-                } else {
-                    Some("sid".to_string())
-                }
-            };
-
-            lsbinfo.release = release.cloned();
+            lsbinfo.release = release;
             lsbinfo.codename = codename;
         }
     }
@@ -466,14 +461,13 @@ fn parse_apt_policy() -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
             let priority = regex
                 .captures(line)
                 .unwrap()
-                .map(|c| c.get(1).unwrap())
-                .map(|c1| c1.as_str().parse::<i64>().unwrap())
+                .map(|c| c[1].parse().unwrap())
                 .unwrap();
             let bits = line.splitn(2, ' ').collect::<Vec<_>>();
             if bits.len() > 1 {
                 data.push(AptCachePolicyEntry {
                     priority,
-                    policy: bits[1].parse::<AptPolicy>().unwrap(),
+                    policy: bits[1].parse().unwrap(),
                 });
             }
         }
@@ -495,7 +489,7 @@ impl FromStr for AptPolicy {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let long_names = vec![
+        let long_names = [
             ("v", "version"),
             ("o", "origin"),
             ("a", "suite"),
@@ -512,7 +506,7 @@ impl FromStr for AptPolicy {
             if kv.len() > 1 {
                 let (k, v) = (kv[0], kv.get(1).copied().unwrap());
                 if let Some(kl) = long_names.get(k) {
-                    hash_map.insert(kl, v);
+                    hash_map.insert(*kl, v);
                 }
             }
         }
@@ -528,22 +522,19 @@ impl FromStr for AptPolicy {
 
 fn lookup_codename(x: &X, release: &str) -> Option<String> {
     let regex = Regex::new(r#"(\d+)\.(\d+)(r(\d+))?"#).unwrap();
-    match regex.captures(release).unwrap() {
-        None => None,
-        Some(captures) => {
-            let c1 = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
-            let short = if c1 < 7 {
-                format!("{c1}.{c2}", c2 = captures.get(2).unwrap().as_str())
-            } else {
-                format!("{c1}")
-            };
+    regex.captures(release).unwrap().and_then(|captures| {
+        let c1 = captures[1].parse::<u32>().unwrap();
+        let short = if c1 < 7 {
+            format!("{c1}.{c2}", c2 = &captures[2])
+        } else {
+            format!("{c1}")
+        };
 
-            x.codename_lookup
-                .iter()
-                .find(|p| p.version == short)
-                .map(|a| a.version.clone())
-        }
-    }
+        x.codename_lookup
+            .iter()
+            .find(|p| p.version == short)
+            .map(|a| a.version.clone())
+    })
 }
 
 fn etc_debian_version() -> impl AsRef<Path> {
