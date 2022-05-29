@@ -237,7 +237,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
         }
     }
 
-    let x = get_distro_info(lsbinfo.id.clone());
+    let x = X::get_distro_info(lsbinfo.id.clone());
 
     #[allow(unused_variables)]
     let os = match uname_rs::Uname::new()?.sysname.as_str() {
@@ -270,7 +270,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
         let release = release.unwrap_or(unknown);
 
         if !&release[0..=1]._is_alpha() {
-            let codename = lookup_codename(&x, release).unwrap_or_else(|| "n/a".to_string());
+            let codename = x.lookup_codename(release).unwrap_or_else(|| "n/a".to_string());
             lsbinfo.codename = Some(codename);
             Some(release.to_string())
         } else if release.ends_with("/sid") {
@@ -283,7 +283,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
     };
 
     if lsbinfo.codename.is_none() {
-        let rinfo = guess_release_from_apt(None, None, None, None, None, &x);
+        let rinfo = x.guess_release_from_apt(None, None, None, None, None);
         if let Some(mut rinfo) = rinfo {
             let release = rinfo.version.and_then(|release| {
                 let condition = rinfo.origin.unwrap() == *"Debian Ports"
@@ -307,7 +307,7 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
                         Some("sid".to_string())
                     }
                 },
-                |release| lookup_codename(&x, release.as_str())
+                |release| x.lookup_codename(release.as_str())
             );
 
             lsbinfo.release = release;
@@ -326,89 +326,157 @@ fn guess_debian_release() -> Result<DistroInfo, Box<dyn Error>> {
     Ok(lsbinfo)
 }
 
-fn guess_release_from_apt(
-    origin: Option<String>,
-    component: Option<String>,
-    ignore_suites: Option<Vec<String>>,
-    label: Option<String>,
-    alternate_olabels_ports: Option<HashMap<String, Vec<String>>>,
-    x: &X,
-) -> Option<AptPolicy> {
-    let releases = parse_apt_policy();
-    let origin = origin.unwrap_or_else(|| "Debian".to_string());
-    let component = component.unwrap_or_else(|| "main".to_string());
-    let ignore_suites = ignore_suites.unwrap_or_else(|| vec!["experimental".to_string()]);
-    let label = label.unwrap_or_else(|| "Debian".to_string());
-    let alternate_olabels_ports = alternate_olabels_ports.unwrap_or_else(|| {
-        [(
-            "Debian Ports".to_string(),
-            vec![
-                "ftp.ports.debian.org".to_string(),
-                "ftp.debian-ports.org".to_string(),
-            ],
-        )]
-        .into_iter()
-        .collect()
-    });
+#[derive(Eq, PartialEq)]
+struct X {
+    codename_lookup: Vec<DistroInfoCsvRecord>,
+    release_order: Vec<String>,
+    debian_testing_codename: Option<String>,
+}
 
-    let releases = releases.as_ref().ok()?;
+impl X {
+    fn guess_release_from_apt(
+        &self,
+        origin: Option<String>,
+        component: Option<String>,
+        ignore_suites: Option<Vec<String>>,
+        label: Option<String>,
+        alternate_ports: Option<HashMap<String, Vec<String>>>,
+    ) -> Option<AptPolicy> {
+        let releases = parse_apt_policy();
+        let origin = origin.unwrap_or_else(|| "Debian".to_string());
+        let component = component.unwrap_or_else(|| "main".to_string());
+        let ignore_suites = ignore_suites.unwrap_or_else(|| vec!["experimental".to_string()]);
+        let label = label.unwrap_or_else(|| "Debian".to_string());
+        let alternate_olabels_ports = alternate_ports.unwrap_or_else(|| {
+            [(
+                "Debian Ports".to_string(),
+                vec![
+                    "ftp.ports.debian.org".to_string(),
+                    "ftp.debian-ports.org".to_string(),
+                ],
+            )]
+                .into_iter()
+                .collect()
+        });
 
-    if releases.is_empty() {
-        return None;
-    }
+        let releases = releases.as_ref().ok()?;
 
-    let dim = {
-        let mut dim = releases.iter().filter(|release| {
-            let p_origin = release.policy.origin
-                .clone()
-                .unwrap_or_default();
-            let p_suite = release.policy.suite
-                .clone()
-                .unwrap_or_default();
-            let p_component = release.policy.component
-                .clone()
-                .unwrap_or_default();
-            let p_label = release.policy.label
-                .clone()
-                .unwrap_or_default();
-
-            p_origin == origin
-                && !ignore_suites.contains(&p_suite)
-                && p_component == component
-                && p_label == label
-                || (alternate_olabels_ports.contains_key(&p_origin)
-                && alternate_olabels_ports[&p_origin].contains(&label))
-        }).collect::<Vec<_>>();
-
-        if dim.is_empty() {
+        if releases.is_empty() {
             return None;
         }
 
-        dim.sort_by_key(|a| std::cmp::Reverse(a.priority));
+        let dim = {
+            let mut dim = releases.iter().filter(|release| {
+                let p_origin = release.policy.origin
+                    .clone()
+                    .unwrap_or_default();
+                let p_suite = release.policy.suite
+                    .clone()
+                    .unwrap_or_default();
+                let p_component = release.policy.component
+                    .clone()
+                    .unwrap_or_default();
+                let p_label = release.policy.label
+                    .clone()
+                    .unwrap_or_default();
 
-        dim
-    };
+                p_origin == origin
+                    && !ignore_suites.contains(&p_suite)
+                    && p_component == component
+                    && p_label == label
+                    || (alternate_olabels_ports.contains_key(&p_origin)
+                    && alternate_olabels_ports[&p_origin].contains(&label))
+            }).collect::<Vec<_>>();
 
-    let max_priority = dim[0].priority;
-    let mut releases = dim
-        .iter()
-        .filter(|x| x.priority == max_priority)
-        .collect::<Vec<_>>();
-    releases.sort_by_key(|a| {
-        let policy = a.policy.suite.as_ref();
-
-        policy.map_or(0, |suite| {
-            if x.release_order.contains(suite) {
-                // NOTE: do you think you can contain 2^63 elements in your memory?
-                (x.release_order.len() - x.release_order.iter().position(|a| a == suite).unwrap()) as isize
-            } else {
-                // FIXME: this is not correct in strict manner.
-                suite.parse::<f64>().unwrap_or(0.0) as isize
+            if dim.is_empty() {
+                return None;
             }
-        })
-    });
 
-    Some(releases[0].policy.clone())
+            dim.sort_by_key(|a| std::cmp::Reverse(a.priority));
+
+            dim
+        };
+
+        let max_priority = dim[0].priority;
+        let mut releases = dim
+            .iter()
+            .filter(|x| x.priority == max_priority)
+            .collect::<Vec<_>>();
+        releases.sort_by_key(|a| {
+            let policy = a.policy.suite.as_ref();
+
+            policy.map_or(0, |suite| {
+                if self.release_order.contains(suite) {
+                    // NOTE: do you think you can contain 2^63 elements in your memory?
+                    (self.release_order.len() - self.release_order.iter().position(|a| a == suite).unwrap()) as isize
+                } else {
+                    // FIXME: this is not correct in strict manner.
+                    suite.parse::<f64>().unwrap_or(0.0) as isize
+                }
+            })
+        });
+
+        Some(releases[0].policy.clone())
+    }
+
+    fn lookup_codename(&self, release: &str) -> Option<String> {
+        let regex = Regex::new(r#"(\d+)\.(\d+)(r(\d+))?"#).unwrap();
+        regex.captures(release).unwrap().and_then(|captures| {
+            let c1 = captures[1].parse::<u32>().unwrap();
+            let short = if c1 < 7 {
+                format!("{c1}.{c2}", c2 = &captures[2])
+            } else {
+                format!("{c1}")
+            };
+
+            self.codename_lookup
+                .iter()
+                .find(|p| p.version == short)
+                .map(|a| a.version.clone())
+        })
+    }
+
+    fn get_distro_info(origin: Option<String>) -> Self {
+        let origin = origin.unwrap_or_else(|| "Debian".to_string());
+        let csv_file = get_distro_csv(origin.as_str());
+
+        let mut codename_lookup = csv::Reader::from_path(csv_file)
+            .unwrap()
+            .deserialize::<DistroInfoCsvRecord>()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        // f64 is not Ord
+        codename_lookup.sort_by(|a, b| {
+            a.series
+                .parse::<f64>()
+                .unwrap()
+                .partial_cmp(&b.series.parse::<f64>().unwrap())
+                .unwrap()
+        });
+        let mut release_order = codename_lookup
+            .iter()
+            .map(|a| a.series.clone())
+            .collect::<Vec<_>>();
+
+        let debian_testing_codename = (origin.to_lowercase() == *"debian").then(|| {
+            release_order.append(&mut vec![
+                "stable".to_string(),
+                "proposed-updates".to_string(),
+                "testing".to_string(),
+                "testing-proposed-updates".to_string(),
+                "unstable".to_string(),
+                "sid".to_string(),
+            ]);
+
+            "unknown.new.testing"
+        });
+
+        Self {
+            codename_lookup,
+            release_order,
+            debian_testing_codename: debian_testing_codename.map(std::string::ToString::to_string),
+        }
+    }
 }
 
 fn parse_apt_policy() -> Result<Vec<AptCachePolicyEntry>, Box<dyn Error>> {
@@ -498,23 +566,6 @@ impl FromStr for AptPolicy {
     }
 }
 
-fn lookup_codename(x: &X, release: &str) -> Option<String> {
-    let regex = Regex::new(r#"(\d+)\.(\d+)(r(\d+))?"#).unwrap();
-    regex.captures(release).unwrap().and_then(|captures| {
-        let c1 = captures[1].parse::<u32>().unwrap();
-        let short = if c1 < 7 {
-            format!("{c1}.{c2}", c2 = &captures[2])
-        } else {
-            format!("{c1}")
-        };
-
-        x.codename_lookup
-            .iter()
-            .find(|p| p.version == short)
-            .map(|a| a.version.clone())
-    })
-}
-
 fn etc_debian_version() -> impl AsRef<Path> {
     var("LSB_ETC_DEBIAN_VERSION").unwrap_or_else(|_| "/etc/debian_version".to_string())
 }
@@ -525,55 +576,6 @@ use serde::Deserialize;
 struct DistroInfoCsvRecord {
     version: String,
     series: String,
-}
-
-#[derive(Eq, PartialEq)]
-struct X {
-    codename_lookup: Vec<DistroInfoCsvRecord>,
-    release_order: Vec<String>,
-    debian_testing_codename: Option<String>,
-}
-
-fn get_distro_info(origin: Option<String>) -> X {
-    let origin = origin.unwrap_or_else(|| "Debian".to_string());
-    let csv_file = get_distro_csv(origin.as_str());
-
-    let mut codename_lookup = csv::Reader::from_path(csv_file)
-        .unwrap()
-        .deserialize::<DistroInfoCsvRecord>()
-        .map(Result::unwrap)
-        .collect::<Vec<_>>();
-    // f64 is not Ord
-    codename_lookup.sort_by(|a, b| {
-        a.series
-            .parse::<f64>()
-            .unwrap()
-            .partial_cmp(&b.series.parse::<f64>().unwrap())
-            .unwrap()
-    });
-    let mut release_order = codename_lookup
-        .iter()
-        .map(|a| a.series.clone())
-        .collect::<Vec<_>>();
-
-    let debian_testing_codename = (origin.to_lowercase() == *"debian").then(|| {
-        release_order.append(&mut vec![
-            "stable".to_string(),
-            "proposed-updates".to_string(),
-            "testing".to_string(),
-            "testing-proposed-updates".to_string(),
-            "unstable".to_string(),
-            "sid".to_string(),
-        ]);
-
-        "unknown.new.testing"
-    });
-
-    X {
-        codename_lookup,
-        release_order,
-        debian_testing_codename: debian_testing_codename.map(std::string::ToString::to_string),
-    }
 }
 
 fn get_distro_csv(#[allow(unused_variables)] origin: &str) -> impl AsRef<Path> {
