@@ -57,7 +57,21 @@ impl FromStr for AptPolicy {
     }
 }
 
-pub(in crate::lsb_release::imp) fn dpkg_origin() -> impl AsRef<Path> {
+pub(in crate::lsb_release::imp) fn dpkg_default_vendor() -> Result<Option<String>, Box<dyn Error>> {
+    let f = File::open(dpkg_origin())?;
+    let f = BufReader::new(f);
+    Ok(
+        f.lines().map(Result::unwrap)
+            .map(|line| line.splitn(2, ": ").map(std::string::ToString::to_string).collect::<Vec<_>>())
+            .map(|elements| (elements[0].clone(), elements[1].clone()))
+            .map(|(header, content)| (header.to_lowercase(), content.trim().to_string()))
+            .filter(|(header, _)| header == "vendor")
+            .last()
+            .map(|(_, content)| content)
+    )
+}
+
+fn dpkg_origin() -> impl AsRef<Path> {
     var("LSB_ETC_DPKG_ORIGINS_DEFAULT").unwrap_or_else(|_| "/etc/dpkg/origins/default".to_string())
 }
 

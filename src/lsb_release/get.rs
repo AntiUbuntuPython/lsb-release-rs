@@ -1,4 +1,4 @@
-use crate::lsb_release::imp::{DistroInfo, FFI};
+use crate::lsb_release::imp::dist::{DistroInfo, lsb_version};
 
 pub trait LSBInfo {
     fn id(&self) -> Option<String>;
@@ -34,7 +34,7 @@ impl LSBInfo for LSBInfoGetter {
 
     // this is check_modules_installed()
     fn lsb_version(&self) -> Option<Vec<String>> {
-        FFI::lsb_version()
+        lsb_version()
     }
 }
 

@@ -7,6 +7,10 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use fancy_regex::Regex;
 use once_cell::sync::Lazy;
+use serde::Deserialize;
+use voca_rs::Voca;
+use crate::lsb_release::imp::apt::{AptPolicy, dpkg_default_vendor, parse_apt_policy};
+use crate::lsb_release::imp::lsb::valid_lsb_versions;
 
 static MOD_NAME_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"lsb-(?P<module>[a-z\d]+)-(?P<arch>[^ ]+)(?: \(= (?P<version>[\d.]+)\))?"#)
@@ -19,6 +23,42 @@ pub(in crate::lsb_release) struct DistroInfo {
     pub(in crate::lsb_release) codename: Option<String>,
     pub(in crate::lsb_release) id: Option<String>,
     pub(in crate::lsb_release) description: Option<String>,
+}
+
+#[derive(Default, Eq, PartialEq, Debug)]
+struct Y {
+    release: Option<String>,
+    codename: Option<String>,
+}
+
+fn get_debian_release(x: &X) -> Result<Y, Box<dyn Error>> {
+    let path = PathGetter::debian_version();
+    let read_lines = &BufReader::new(
+        File::open(path)?,
+    )
+        .lines()
+        .collect::<Vec<_>>();
+
+    let release = read_lines[0].as_ref();
+
+    // borrow checkers :c
+    let unknown = &"unknown".to_string();
+    let release = release.unwrap_or(unknown);
+
+    let mut y = Y::default();
+
+    if !&release[0..=1]._is_alpha() {
+        let codename = x.lookup_codename(release).unwrap_or_else(|| "n/a".to_string());
+        y.codename = Some(codename);
+        y.release = Some(release.to_string());
+    } else if release.ends_with("/sid") {
+        let strip = release.strip_suffix("/sid").unwrap();
+        y.release = (strip.to_lowercase() != "testing").then(|| strip.to_string())
+    } else {
+        y.release = Some(release.to_string())
+    };
+
+    Ok(y)
 }
 
 impl DistroInfo {
@@ -49,24 +89,7 @@ impl DistroInfo {
             id: Some("Debian".to_string()),
             ..DistroInfo::default()
         };
-        let dpkg_origin = PathGetter::dpkg_origin();
-        {
-            // FIXME: this is not correct. should skip operation instead of panicking
-            let f = File::open(dpkg_origin)
-                .map_err(|e| eprintln!("Unable to open dpkg_origin: {e}"))
-                .unwrap();
-            let f = BufReader::new(f);
-            let lines = f.lines().map(Result::unwrap);
-            for line in lines {
-                let elements = line.splitn(2, ": ").collect::<Vec<_>>();
-                let (header, content) = (elements[0], elements[1]);
-                let header = header._lower_case();
-                let content = content.trim();
-                if header == "vendor" {
-                    lsbinfo.id = Some(content.to_string());
-                }
-            }
-        }
+        lsbinfo.id = dpkg_default_vendor().ok().flatten();
 
         let x = X::get_distro_info(lsbinfo.id.clone());
 
@@ -83,35 +106,9 @@ impl DistroInfo {
             "{id}s {os}s",
             id = lsbinfo.id.clone().unwrap_or_default()
         ));
-        lsbinfo.release = {
-            let path = PathGetter::debian_version();
-            // FIXME: this is not correct. should skip operation instead of panicking
-            let read_lines = &BufReader::new(
-                File::open(path)
-                    .map_err(|e| eprintln!("Unable to open debian_release: {e}"))
-                    .unwrap(),
-            )
-                .lines()
-                .collect::<Vec<_>>();
-
-            let release = read_lines[0].as_ref();
-
-            // borrow checkers :c
-            let unknown = &"unknown".to_string();
-            let release = release.unwrap_or(unknown);
-
-            if !&release[0..=1]._is_alpha() {
-                let codename = x.lookup_codename(release).unwrap_or_else(|| "n/a".to_string());
-                lsbinfo.codename = Some(codename);
-                Some(release.to_string())
-            } else if release.ends_with("/sid") {
-                let strip = release.strip_suffix("/sid").unwrap();
-                let strip2 = strip.to_lowercase();
-                (strip2 != "testing").then(|| strip.to_string())
-            } else {
-                Some(release.to_string())
-            }
-        };
+        let y = get_debian_release(&x)?;
+        lsbinfo.release = y.release;
+        lsbinfo.codename = y.codename;
 
         if lsbinfo.codename.is_none() {
             let rinfo = x.guess_release_from_apt(None, None, None, None, None);
@@ -491,11 +488,6 @@ pub(in crate::lsb_release) fn lsb_version() -> Option<Vec<String>> {
         module_vec
     })
 }
-
-use serde::Deserialize;
-use voca_rs::Voca;
-use crate::lsb_release::imp::apt::{AptPolicy, parse_apt_policy};
-use crate::lsb_release::imp::lsb::valid_lsb_versions;
 
 #[derive(Deserialize, Eq, PartialEq, Clone)]
 struct DistroInfoCsvRecord {
