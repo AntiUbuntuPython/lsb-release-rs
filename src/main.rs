@@ -25,7 +25,7 @@ mod args;
 mod lsb_release;
 
 use crate::args::Args;
-use crate::lsb_release::{grub_info, LSBInfo};
+use crate::lsb_release::get::{grub_info, LSBInfo};
 use clap::Parser;
 
 fn main() {
