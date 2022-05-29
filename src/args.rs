@@ -28,7 +28,11 @@ impl Args {
             self.show_release = true;
             self.show_codename = true;
         } else {
-            self.show_lsb_modules = !self.show_lsb_modules && !self.show_distributor && !self.show_description && !self.show_release && !self.show_codename;
+            self.show_lsb_modules = !self.show_lsb_modules
+                && !self.show_distributor
+                && !self.show_description
+                && !self.show_release
+                && !self.show_codename;
         }
 
         self

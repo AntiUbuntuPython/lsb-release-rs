@@ -1,12 +1,12 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic, clippy::nursery)]
 
-mod lsb_release;
 mod args;
+mod lsb_release;
 
-use clap::Parser;
 use crate::args::Args;
-use crate::lsb_release::{LSBInfo, grub_info};
+use crate::lsb_release::{grub_info, LSBInfo};
+use clap::Parser;
 
 fn main() {
     let args: Args = Args::parse();
