@@ -545,6 +545,7 @@ fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>
     File::open(path).map(|read| {
         let read = BufReader::new(read);
         let unwraped = read.lines().map(Result::unwrap).collect::<Vec<_>>();
+        let mut info = DistroInfo::default();
         for line4 in unwraped {
             let line = line4.as_str().trim();
             if line.is_empty() {
@@ -555,7 +556,6 @@ fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>
                 continue
             }
 
-            let mut info = DistroInfo::default();
             let elements = line.splitn(2, '=').collect::<Vec<_>>();
             let (var, arg) = (elements.get(0).unwrap(), elements.get(1).unwrap());
             let arg = if arg.starts_with('"') && arg.ends_with('"') {
@@ -585,8 +585,7 @@ fn get_partial_info(path: impl AsRef<Path>) -> Result<DistroInfo, Box<dyn Error>
                 _ => {}
             }
         }
-
-        todo!("shut up type error")
+        info
     }).map_err(|e| Box::new(e) as Box<dyn Error>)
 
 }
